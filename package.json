@@ -1,0 +1,38 @@
+{
+  "name": "recedit",
+  "version": "0.1.0-preview",
+  "description": "A jQuery UI-based record editor dialog component supporting multiple field types, tabbed layouts, inline editing, and custom dialogs.",
+  "author": "Ozmx Internet Services <recedit@ozmx.com.au>",
+  "main": "src/recedit.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tjr50/recedit.git"
+  },
+  "keywords": [
+    "jquery",
+    "jquery-ui",
+    "dialog",
+    "form",
+    "editor",
+    "record",
+    "inline"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "terser src/recedit.js -o dist/recedit.min.js -c -m",
+    "serve": "node test/e2e/server.js",
+    "test": "playwright test --config test/e2e/playwright.config.js",
+    "test:e2e": "playwright test --config test/e2e/playwright.config.js",
+    "test:e2e:headed": "playwright test --config test/e2e/playwright.config.js --headed",
+    "test:e2e:debug": "playwright test --config test/e2e/playwright.config.js --debug"
+  },
+  "peerDependencies": {
+    "jquery": ">=3.5.0",
+    "jquery-ui": ">=1.13.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "express": "^5.2.1",
+    "terser": "^5.46.0"
+  }
+}

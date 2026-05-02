@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<!--
+  RecEdit QUnit Test Runner
+  ========================
+  Serve via the test server for full HTTP semantics (required for fetch() and
+  URL-based select-option tests):
+
+      node test/e2e/server.js
+      open http://127.0.0.1:4000/qunit/recedit-tests.html
+
+  Most JS/CSS dependencies are loaded from CDN — an internet connection is required.
+  To run offline, download the CDN assets and adjust the <link> / <script> tags below.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RecEdit — QUnit Tests</title>
+
+    <!-- jQuery UI CSS (CDN — combined structure + base theme) -->
+    <link rel="stylesheet" href="https://code.jquery.com/ui/1.14.2/themes/base/jquery-ui.min.css">
+
+    <!-- jQuery Timepicker CSS (CDN) -->
+    <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/timepicker/1.3.5/jquery.timepicker.min.css">
+
+    <!-- RecEdit CSS -->
+    <link rel="stylesheet" href="/recedit.css">
+
+    <!-- QUnit CSS (CDN) -->
+    <link rel="stylesheet" href="https://code.jquery.com/qunit/qunit-2.21.0.css">
+
+    <style>
+        /* Stop the modal overlay blocking QUnit toolbar clicks */
+        .ui-widget-overlay { pointer-events: none !important; z-index: 1 !important; }
+        /* Keep dialogs inside the test area so they don't obscure the QUnit results panel */
+        .ui-dialog { z-index: 10 !important; }
+        body { padding: 20px; font-family: sans-serif; }
+        #test-sandbox { position: absolute; left: -9999px; top: 0; width: 800px; }
+    </style>
+</head>
+<body>
+
+<!-- QUnit result panels -->
+<div id="qunit"></div>
+<div id="qunit-fixture"></div>
+
+<!-- Off-screen sandbox for dialogs opened during tests -->
+<div id="test-sandbox"></div>
+
+<!-- ───── JavaScript dependencies ───── -->
+<script src="https://code.jquery.com/jquery-4.0.0.min.js"></script>
+<script src="https://code.jquery.com/ui/1.14.2/jquery-ui.min.js"></script>
+<!-- jQuery Timepicker (CDN) -->
+<script src="//cdnjs.cloudflare.com/ajax/libs/timepicker/1.3.5/jquery.timepicker.min.js"></script>
+<!-- Inputmask (CDN) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.inputmask/5.0.9/jquery.inputmask.min.js"></script>
+
+<!-- RecEdit library under test -->
+<script src="/recedit.js"></script>
+
+<!-- QUnit (CDN) -->
+<script src="https://code.jquery.com/qunit/qunit-2.21.0.js"></script>
+
+<!-- Test suite -->
+<script src="recedit-tests.js"></script>
+
+</body>
+</html>

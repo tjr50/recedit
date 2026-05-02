@@ -1,0 +1,336 @@
+/* Record Editor - jQuery UI Theme Compatible */
+
+.record-editor-form {
+    padding: 0;
+}
+
+.record-editor-form fieldset {
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
+.field-group {
+    margin-bottom: 0.9em;  /* distance between fields, was 15px, reduced to 10px for better spacing */
+}
+
+/* Vertical layout (default) */
+.field-group-vertical .field-label {
+    display: block;
+    padding: 8px 12px;
+    margin-bottom: 5px;  /* was 8px, reduced to 5px for better spacing */
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+
+/* Horizontal layout (label and input on same line) */
+.field-group-horizontal {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.field-group-horizontal .field-label {
+    flex-shrink: 0;
+    padding: 8px 12px;
+    margin-bottom: 0;
+    font-weight: bold;
+    font-size: 0.9rem;
+    padding-top: 10px; /* Align label text with input text */
+}
+
+.field-group-horizontal .field-input-container {
+    flex: 1;
+    min-width: 0; /* Prevent flex item from overflowing */
+}
+
+/* Legacy support for field-label without layout class */
+.field-label {
+    display: block;
+    padding: 8px 12px;
+    margin-bottom: 5px;  /* was 8px, reduced to 5px for better spacing */
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+
+.field-input-container {
+    padding: 0;
+}
+
+.field-input-container input,textarea {
+    font-weight: normal ;
+    font-size: 1.1em !important;
+}
+
+.ui-selectmenu-text
+
+ {
+    font-weight: normal ;
+    font-size: 1.1em !important;
+}
+
+/* Remove extra spacing for radio groups and checkboxes so tops align with labels*/
+.radiogroup-container,.checkbox-container {
+ margin-top: 0 !important;
+ padding-top: 0 !important;
+}
+
+/* Required field indicator */
+.field-required .field-label::after {
+    content: ' *';
+    color: #c00;
+    font-weight: bold;
+}
+
+.form-control {
+    max-width: 100%;
+    padding: 8px 10px;
+    box-sizing: border-box;
+    font-size: 0.9rem;
+    font-family: inherit;
+}
+
+
+
+/* Add full-width class for inputs that should span the full width */
+.form-control.full-width {
+    width: 100%;
+}
+
+textarea.form-control {
+    resize: vertical;
+    min-height: 80px;
+}
+
+/* Read-only field styling */
+.form-control.readonly-field,
+.form-control[readonly] {
+    background-color: #f5f5f5;
+    color: #666;
+    cursor: not-allowed;
+    opacity: 0.8;
+}
+
+.form-control.readonly-field:focus,
+.form-control[readonly]:focus {
+    background-color: #f5f5f5;
+    outline: none;
+    box-shadow: none;
+}
+
+/* Field row grouping (for horizontal layout) */
+.field-row {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.field-row .field-group {
+    margin-bottom: 0;
+    flex: 1;
+    min-width: 0; /* Prevent flex item from overflowing */
+}
+
+/* Tab styling */
+.record-editor-tabs {
+    margin: 0;
+    padding: 0;
+}
+
+.record-editor-tabs .tab-panel {
+    padding: 15px 0;
+}
+
+.record-editor-tabs .tab-panel fieldset {
+    border: none;
+    padding: 0;
+/*    margin: 0; */
+    margin-left: 1em;
+    margin-right: 1em;
+    font-size: 0.9rem;
+}
+
+/* Ensure tabs take full width */
+.record-editor-tabs .ui-tabs-nav {
+    padding: 0.2em 0.2em 0;
+}
+
+/* Tab error indicator */
+.tab-error-indicator {
+    color: #d9534f;
+    font-weight: bold;
+    margin-left: 0.2em;
+}
+
+
+/* Tab icon spacing */
+.record-editor-tabs .ui-tabs-nav a .ui-icon {
+    display: inline-block;
+    margin-right: 5px;
+    vertical-align: middle;
+}
+
+/* Checkbox styling */
+.checkbox-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.checkbox-container label {
+    margin: 0;
+    font-weight: normal;
+}
+
+/* Radio group styling */
+.radiogroup-container {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 16px;
+    padding: 4px 0;
+}
+
+.radiogroup-container label {
+    margin: 0;
+    font-weight: normal;
+}
+
+/* Slider styling */
+.slider-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.slider-widget {
+    flex: 1;
+}
+
+.slider-value {
+    width: 80px;
+    text-align: center;
+}
+
+/* jQuery UI Selectmenu custom width */
+.ui-selectmenu-button {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Datepicker input icon */
+.ui-datepicker-trigger {
+    margin-left: 5px;
+    vertical-align: middle;
+}
+
+/* Ensure the dialog and its modal overlay always render above fixed/sticky page chrome
+   (e.g. navbars). SmartMenus and similar navbars use z-index 9999; jQuery UI's own
+   default for .ui-front is only 100, so we override here. */
+.ui-widget-overlay {
+    z-index: 10000 !important;
+}
+.ui-dialog {
+    z-index: 10001 !important;
+}
+
+/* Dialog content spacing */
+.ui-dialog .ui-dialog-content {
+    padding: 20px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+    .ui-dialog {
+        width: 95% !important;
+        margin: 10px auto !important;
+    }
+    
+    .slider-container {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .slider-value {
+        width: 100%;
+    }
+}
+
+/* Error dialog styling */
+.ui-dialog .ui-icon-alert {
+    width: 16px;
+    height: 16px;
+}
+
+/* Character counter styling */
+.char-counter {
+    font-size: 0.75rem;
+    color: #666;
+    margin-top: 4px;
+    text-align: right;
+}
+
+.char-counter-warning {
+    color: #d9534f;
+    font-weight: bold;
+}
+
+.char-counter .current {
+    font-weight: bold;
+}
+
+/* Field-level validation error message styling */
+.field-error {
+    display: none;
+    font-size: 0.8rem;
+    color: red;
+    margin-top: 5px;
+    margin-bottom: 0;
+    padding-bottom: 0;
+    line-height: 0.6;
+}
+
+/* Optional: Width helper classes */
+.input-xs { width: 80px !important; }
+.input-sm { width: 150px !important; }
+.input-md { width: 250px !important; }
+.input-lg { width: 400px !important; }
+.input-full { width: 100% !important; }
+
+/* htmldiv field type */
+.htmldiv-content {
+    box-sizing: border-box;
+}
+
+/* align:'dialog' - override flex so the div spans the full row width */
+.htmldiv-align-dialog {
+    display: block;
+}
+
+/* Custom button alignment in dialog button pane.
+   Buttons with align:'left' receive class recedit-btn-left, which pushes all
+   subsequent buttons to the right via margin-right:auto.
+   Applies to both jQuery UI dialogs and RecEditInlineForm (which emits the
+   same ui-dialog-buttonpane > ui-dialog-buttonset structure). */
+.ui-dialog-buttonpane .ui-dialog-buttonset {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+}
+.ui-dialog-buttonpane .ui-dialog-buttonset .recedit-btn-left {
+    margin-right: auto;
+}
+
+/* When used outside a .ui-dialog (inline form), apply the same structural rules
+   that jQuery UI normally scopes to .ui-dialog .ui-dialog-buttonpane. */
+.recedit-button-bar.ui-dialog-buttonpane {
+    border-width: 1px 0 0 0;
+    padding: .3em 1em .5em .4em;
+}
+.recedit-button-bar.ui-dialog-buttonpane button {
+    margin: .5em .4em .5em 0;
+    cursor: pointer;
+}
