@@ -28,7 +28,7 @@ module.exports = defineConfig({
     /* Auto-start the Express test server before running tests */
     webServer: {
         command: 'node test/e2e/server.js',
-        url: 'http://127.0.0.1:4000',
+        url: 'http://127.0.0.1:54400',
         reuseExistingServer: !process.env.CI,
         stdout: 'pipe',
         stderr: 'pipe',
@@ -49,7 +49,7 @@ module.exports = defineConfig({
 
     use: {
         /* Express test server base URL */
-        baseURL: 'http://127.0.0.1:4000',
+        baseURL: 'http://127.0.0.1:54400',
 
         /* Capture screenshot and trace on failure */
         screenshot: 'only-on-failure',

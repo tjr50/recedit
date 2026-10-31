@@ -55,7 +55,7 @@ This runs all 56 tests (55 Playwright E2E tests + 1 QUnit runner test). The Expr
 | `npm test` | All tests, headless Chromium |
 | `npm run test:e2e:headed` | All tests, visible browser window |
 | `npm run test:e2e:debug` | Step-through Playwright debugger |
-| `npm run serve` | Start the test server only (port 4000) — note: `serve`, not `server` |
+| `npm run serve` | Start the test server only (port 54400) — note: `serve`, not `server` |
 
 To run a single spec file:
 
@@ -74,7 +74,7 @@ Start the server (the script is `serve`, not `server`), then open the runner in 
 ```powershell
 npm run serve
 # then navigate to:
-# http://127.0.0.1:4000/qunit/recedit-tests.html
+# http://127.0.0.1:54400/qunit/recedit-tests.html
 ```
 
 - Green bar = all passing.

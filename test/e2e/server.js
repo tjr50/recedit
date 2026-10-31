@@ -15,7 +15,7 @@
  * jquery-timepicker is loaded from CDN.
  *
  * Start:  node test/e2e/server.js
- * Port:   4000 (override with PORT env var)
+ * Port:   54400 (override with PORT env var)
  */
 
 'use strict';
@@ -25,7 +25,7 @@ const path    = require('path');
 
 const app     = express();
 const ROOT    = path.resolve(__dirname, '../..');   // repo root
-const PORT    = process.env.PORT || 4000;
+const PORT    = process.env.PORT || 54400;
 
 // ── Library assets ───────────────────────────────────────────────────────────
 // Serve recedit.js and recedit.css directly from the repo root paths.
@@ -34,7 +34,7 @@ app.use('/recedit.css', express.static(path.join(ROOT, 'css/recedit.css')));
 
 // ── QUnit test runner ────────────────────────────────────────────────────────
 // Serves test/unit/ at /qunit so recedit-tests.html can be opened at
-// http://127.0.0.1:4000/qunit/recedit-tests.html
+// http://127.0.0.1:54400/qunit/recedit-tests.html
 app.use('/qunit', express.static(path.join(ROOT, 'test/unit')));
 
 // ── Shared HTML builder ──────────────────────────────────────────────────────

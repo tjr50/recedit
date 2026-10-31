@@ -6,7 +6,7 @@
  * assertion so that the output is visible in the standard `npm test` report.
  *
  * The QUnit page is served at:
- *   http://127.0.0.1:4000/qunit/recedit-tests.html
+ *   http://127.0.0.1:54400/qunit/recedit-tests.html
  */
 
 // @ts-check

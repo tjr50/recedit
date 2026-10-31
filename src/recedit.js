@@ -1,3 +1,4 @@
+"use strict";
 /**
  * RecEdit - A jQuery UI-based record editor dialog component
  * 
@@ -31,10 +32,11 @@
  * });
  * 
  * await editor.open({ record: { firstName: 'John', lastName: 'Doe', email: 'john@example.com' } });
+ * 
  * @license MIT
  * @author Ozmx Internet Services <recedit@ozmx.com.au>
  */
-//console.log('RecEdit.js loaded - Version DEBUG-2026-04-20');
+console.log('RecEdit.js loaded - Version 0.1.1-preview');
 
 // Compatibility shim: $.isFunction was removed in jQuery 4.0.
 // Restored here for legacy plugins (e.g. jquery-timepicker) that still call it.
@@ -176,9 +178,15 @@ class RecEdit {
         this._buildForm();
 
         // Fire onInit callback on first open — form elements are built but not yet populated with data.
-        if (isFirstOpen && this.options.onInit) {
-            this.options.onInit(this);
+        if (isFirstOpen) {
+            if (this && this.options.onInit) {
+                this.options.onInit(this);
+            }
         }
+
+        // _buildForm() recreates every input on each open, so the autocomplete Tab handlers
+        // must be re-attached each time, not just on first open
+        this._initializeAutoComplete();
 
         // Apply dynamic field properties after form is built (overrides creation-time field config)
         if (dynamicFieldProps) {
@@ -207,7 +215,6 @@ class RecEdit {
 
         this._showDialog();
     }
-
 
     /**
      * Applies dynamic field properties to already-built form inputs.
@@ -1827,6 +1834,8 @@ class RecEdit {
             $input.css('width', fieldConfig.inputWidth);
         }
 
+
+
         // Initialize autocomplete
         setTimeout(() => {
             const autocompleteOptions = {
@@ -1866,9 +1875,15 @@ class RecEdit {
                 autocompleteOptions.select = fieldConfig.onSelect;
             }
 
-            $input.autocomplete(autocompleteOptions);
-        }, 0);
+            autocompleteOptions.disabled =  fieldConfig.disabled;
 
+            $input.autocomplete(autocompleteOptions);
+
+            if (fieldConfig.disabled) { // set readonly attribute if field is disabled so user cannot type in the field
+                $input.attr("readonly", "readonly");
+            }
+
+        }, 0);
         return $input;
     }
 
@@ -2183,6 +2198,158 @@ class RecEdit {
             return $input.inputmask('unmaskedvalue');
         }
         return $input.val();
+    }
+
+    /**
+     * Initializes autocomplete fields by identifying all visible, non-readonly fields
+     * and attaching appropriate change handlers to autocomplete-type fields.
+     * Automatically determines the next field for focus after selection, with wrapping.
+     *
+     * @returns {void}
+     * @private
+     */
+    _initializeAutoComplete() {
+        // loop through all field inputs and add names of those that are not hidden or readOnly for use as nextfield in the loop below
+        let nextFields = [];
+        for (const [fieldName, $field] of this.fieldInputs.entries()) {
+            const fieldConfig = this.options.fields[fieldName];
+            // console.log(`Field config for ${fieldName}: ${JSON.stringify(fieldConfig)}`);
+            if (fieldConfig && !fieldConfig.readOnly && !fieldConfig.readonly && !(fieldConfig.type === 'hidden')) {
+                nextFields.push(fieldName);
+            }
+        }
+        //console.log(`Next fields: ${JSON.stringify(nextFields)}`);
+
+        // loop through all field inputs attach autocomplete change handlers if applicable
+        for (let i = 0; i < this.fieldInputs.size; i++) {
+            const [fieldName, $field] = Array.from(this.fieldInputs.entries())[i];
+            const fieldConfig = this.options.fields[fieldName];
+            const fieldType = (fieldConfig && fieldConfig.type) || 'text';
+            const isAutocomplete = fieldType.toLowerCase() === 'autocomplete';
+            if (isAutocomplete) {
+                let nextfield = null;
+                const currentIndex = nextFields.indexOf(fieldName);
+                if (currentIndex >= 0 && currentIndex + 1 < nextFields.length) {
+                    nextfield = nextFields[currentIndex + 1];
+                } else if (currentIndex > 0) {  // wrap around to the first field if not the first element
+                    nextfield = nextFields[0];
+                }
+                this._attachAutocompleteChange($field, fieldName, fieldConfig.nextfield ? fieldConfig.nextfield : nextfield);
+            }
+        }
+    }
+
+    /**
+     * Attaches autocomplete change handler with Tab key detection to trigger search and selection.
+     *
+     * @param {jQuery} field - The jQuery field element to attach the handler to
+     * @param {string} curfield - The current field name (used for event namespace)
+     * @param {string} [nextfield] - The next field name to focus after selection
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _attachAutocompleteChange(field,curfield, nextfield) {
+        // Attach keydown event to autocomplete field to detect Tab and trigger autocomplete search
+        const $field = field // this.fieldInputs.get(curfield);
+        if ($field) {
+            let isProcessingSelection = false;
+            const self = this; // Capture context
+            let selectedByWidget = false;
+            // Remove any previously attached handlers to avoid duplicates
+            $field.off(`keydown.${curfield} blur.${curfield} autocompleteselect.${curfield}`);
+            // jQuery UI's own Tab handling selects the highlighted item and fires 'select' synchronously
+            $field.on(`autocompleteselect.${curfield}`, function() {
+                selectedByWidget = true;
+            });
+            $field.on(`keydown.${curfield}`, function(e) {
+                // Only handle Tab key (keyCode 9)
+                if (e.keyCode === 9 && !isProcessingSelection) {
+                    const value = $(this).val().trim();
+                    
+                    if (value && value.length > 0) {
+                        const acWidget = $field.data('ui-autocomplete');
+                        if (acWidget) {
+                            isProcessingSelection = true;
+                            selectedByWidget = false;
+                            e.preventDefault();  // Prevent default Tab behavior temporarily
+
+                            // Snapshot the highlighted item now, before the widget closes the menu
+                            const menu = acWidget.menu;
+                            const highlighted = (menu && menu.element.is(':visible') && menu.active && menu.active.length)
+                                ? menu.active : null;
+
+                            const finish = () => {
+                                $field.autocomplete('close');
+                                isProcessingSelection = false;
+                                // set focus to the next input field if specified
+                                if (nextfield) {
+                                    const $nextInput = self.fieldInputs.get(nextfield);
+                                    if ($nextInput) {
+                                        $nextInput.focus();
+                                    }
+                                }
+                            };
+
+                            // Wait until all keydown handlers (including the widget's) have run
+                            setTimeout(() => {
+                                if (selectedByWidget) {
+                                    // Widget already selected the highlighted item - a new search would
+                                    // rebuild the menu and overwrite it with the first result
+                                    finish();
+                                } else if (highlighted) {
+                                    try {
+                                        highlighted.trigger('click');
+                                    } finally {
+                                        finish();
+                                    }
+                                } else {
+                                    // Nothing highlighted: run a fresh search, wait for its response (not a
+                                    // fixed delay, which could pick from a stale menu) and prefer the item
+                                    // that exactly matches the typed value, else the first result
+                                    clearTimeout(acWidget.searching); // cancel any pending typed-search
+                                    let done = false;
+                                    const pick = (content) => {
+                                        if (done) return;
+                                        done = true;
+                                        $field.off(`autocompleteresponse.${curfield}`);
+                                        // the menu is rendered after the response event fires
+                                        setTimeout(() => {
+                                            const lc = value.toLowerCase();
+                                            let idx = -1;
+                                            if (content && content.length > 0) {
+                                                idx = content.findIndex(i =>
+                                                    String(i.value).toLowerCase() === lc ||
+                                                    String(i.label).toLowerCase() === lc);
+                                                if (idx < 0 && content.length === 1) idx = 0;
+                                            }
+                                            if (idx >= 0) {
+                                                try {
+                                                    menu.element.children().eq(idx).trigger('click');
+                                                } finally {
+                                                    finish();
+                                                }
+                                            } else {
+                                                // no valid match: clear the field if nothing matched at all,
+                                                // otherwise leave the candidates open for the user to choose
+                                                isProcessingSelection = false;
+                                                if (content && content.length === 0) {
+                                                    $field.autocomplete('close');
+                                                    $field.val('');
+                                                }
+                                                $field.focus();
+                                            }
+                                        }, 0);
+                                    };
+                                    $field.on(`autocompleteresponse.${curfield}`, (ev, ui) => pick(ui.content));
+                                    setTimeout(() => pick(null), 5000); // safety net if the request fails
+                                    $field.autocomplete('search', value);
+                                }
+                            }, 0);
+                        }
+                    }
+                }
+            } );
+        }
     }
 
     /**
@@ -2961,6 +3128,7 @@ class RecEditInlineForm extends RecEdit {
         }
 
         this._buildForm();
+        this._initializeAutoComplete();
 
         if (dynamicFieldProps) {
             this._applyDynamicFieldProps(dynamicFieldProps);
@@ -3118,7 +3286,7 @@ class RecEditInlineForm extends RecEdit {
             // set by _createFieldGroup() → _createInput() remain valid.
             $placeholder.append($fieldGroup.children());
         }
-
+        this._initializeAutoComplete();
         this._initializeDatepickers();
         this._initializeTimepickers();
     }
@@ -3412,7 +3580,7 @@ class RecEditCustomDialog extends RecEdit {
             // Move children from the temporary wrapper into the placeholder.
             $placeholder.append($fieldGroup.children());
         }
-
+        super._initializeAutoComplete();
         this._initializeDatepickers();
         this._initializeTimepickers();
     }

@@ -138,7 +138,7 @@ Start the test server, then open the QUnit runner in your browser:
 
 ```bash
 npm run serve
-# open http://127.0.0.1:4000/qunit/recedit-tests.html
+# open http://127.0.0.1:54400/qunit/recedit-tests.html
 ```
 
 ## Project Structure
