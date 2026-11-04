@@ -15,6 +15,7 @@ A jQuery UI-enhanced dialog component for editing table records with extensive c
 - [Programmatic API](#programmatic-api)
 - [Callbacks and Events](#callbacks-and-events)
 - [Error Handling](#error-handling)
+- [Saving with Files](#saving-with-files)
 - [RecEditInlineForm](#receditinlineform)
 - [RecEditCustomDialog](#receditcustomdialog)
 - [Complete Examples](#complete-examples)
@@ -74,6 +75,7 @@ editor.open({ record: myRecord });
 | `onBeforeShow` | Function | `null` | Callback fired after form is populated, just before the dialog is shown. Receives `(editor, edpak)`. May be async. |
 | `onAfterShow` | Function | `null` | Callback fired after the dialog animation completes and the dialog is fully visible. Receives `(editor, edpak)`. May be async. |
 | `onInit` | Function | `null` | Callback fired once after the form elements are first built, before any record is loaded. Receives `(editor)`. Use for one-time structural setup (e.g. initialising a jQuery UI tabs widget inside an inline form). |
+| `fileProgressMinSize` | Number / Boolean | `1048576` | Minimum **total** size (bytes) of the files in a save before `editor.submit()` shows the upload progress bar. `0` shows it for any upload; `false` never shows it. See [Saving with Files](#saving-with-files). |
 
 ### Messages Object
 
@@ -83,7 +85,15 @@ messages: {
     save: 'Save',
     cancel: 'Cancel',
     saving: 'Saving...',
-    error: 'Error'
+    error: 'Error',
+    // `file` field and upload messages
+    removeFile: 'Remove',
+    dropHint: 'or drop a file here',   // accepted types / max size are appended in brackets, e.g. '(image/*, .pdf max size 5M)'
+    fileMaxSize: 'max size {size}',   // {size} is replaced with e.g. '150K' or '5M'
+    fileTooLarge: 'File is too large',
+    fileTypeNotAllowed: 'File type not allowed',
+    uploadFailed: 'Upload failed',
+    uploading: 'Uploading... {pct}%'   // {pct} is replaced with the rounded percentage
 }
 ```
 
@@ -632,6 +642,7 @@ quantity: {
 | `autocomplete` | Autocomplete text input |
 | `spinner` | Number spinner with +/- buttons |
 | `slider` | Range slider with value display |
+| `file` | Native file input with thumbnail, Remove button and drag-and-drop (see [File Field Properties](#file-field-properties)) |
 | `hidden` | Hidden field |
 | `htmldiv` | Raw HTML content block — inserts arbitrary markup at any position in the form |
 
@@ -676,6 +687,70 @@ fields: {
         content: '<p class="ui-state-highlight" style="padding:6px">Shipping differs from billing address.</p>'
     },
     shipcity: { label: 'City', type: 'text' }
+}
+```
+
+### File Field Properties
+
+The `file` type renders a native `<input type="file">` (one file per field, no third-party library). The record value is the **filename string** (`''` = no file). Nothing is sent when a file is selected: the `File` object is held in memory and sent when the user clicks Save, together with the record, in a single multipart request (see [Saving with Files](#saving-with-files)).
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `accept` | String | none | Native `accept` string (e.g. `'image/*,.pdf'`). Also checked in JavaScript against the MIME type and extension on selection; an extension match is sufficient when the browser reports an empty MIME type. |
+| `maxFileSize` | Number | none | Maximum file size in bytes, checked on selection. |
+| `thumbnailUrl` | String / Function | none | Thumbnail URL for the current value. A string template where `{name}` tokens are replaced by URL-encoded record values (e.g. `'/api/customers/{id}/logo/thumb'`), or `function(record, fieldName) → url \| null`. `record` is `currentRecord` merged with the field's candidate value. Not shown when the value is empty. |
+| `thumbnailSize` | Number / String | `64` | Thumbnail max width and height: a number (px) or a CSS length string such as `'5em'`. |
+| `dropZone` | Boolean | `true` | Make the whole field a drag-and-drop target, with a hint. Not applied to `readonly` / `readOnly` / `disabled` fields. |
+
+`readonly`, `readOnly`, `disabled`, `hidden`, `transient` and `required` work as for other fields. `required` is a marker only (asterisk and `aria-required`): check `edpak.formdata[field] === ''` in `validateForm`.
+
+**Layout:** `div.file-field` containing the thumbnail (left, hidden until there is a URL) and a body with the current filename plus a Remove button, the native input and the drop hint. If the thumbnail fails to load (for example the server returns 404 for a non-image), it is hidden and only the filename is shown.
+
+**Field states and values:**
+
+| State | Displayed | `edpak.formdata[field]` | `edpak.files[field]` |
+|-------|-----------|-------------------------|----------------------|
+| No file | Empty input | `''` | absent |
+| Existing file, untouched | Thumbnail, filename, Remove button, input | the existing filename | absent |
+| New file chosen (replace or add) | Local preview if `image/*`, chosen name in the input, Remove button | the chosen `file.name` | the `File` |
+| Remove clicked, no new file chosen (existing file) | Thumbnail and filename hidden, input cleared | `''` | absent |
+| Remove clicked, new file chosen | Selection discarded; original thumbnail and filename shown again (existing file kept) | the original value (`''` if there was none) | absent |
+
+**Remove** has two meanings, decided by whether a new file is currently selected:
+
+- **No new file selected:** the value becomes `''`, which deletes the existing file on save.
+- **New file selected:** the selection is discarded and the field reverts to its original value. The existing file is kept. Clicking Remove a second time then deletes it.
+
+Choosing a file after a Remove cancels the removal. `restoreForm()` returns every file field to the original record state; there is no per-field undo.
+
+The Remove button is a `type="button"`, so it never submits the form. `onChange` fires on select, drop and Remove.
+
+**Validation errors:** a file rejected by `accept` or `maxFileSize` is cleared and the message (`messages.fileTypeNotAllowed` / `messages.fileTooLarge`) is shown through `displayFieldErrors()`, so it looks the same as a server-returned error. The error is cleared on the next selection, drop or Remove. These checks are a convenience only; the server must re-check.
+
+**Drag and drop:** the whole field highlights (`file-drop-active`) while a file is dragged over it. Only drags that contain files are handled. On drop, only the **first** file is used (directories are ignored) and it is assigned to the native input and passed through the normal `change` path, so validation, preview, state and `onChange` are identical to using the picker. The library does not add page-level `dragover` / `drop` handlers: a file dropped outside the field makes the browser open it and navigate away. A host that wants to prevent this can add its own guard:
+
+```javascript
+for (const evt of ['dragover', 'drop']) {
+    window.addEventListener(evt, e => {
+        if (e.dataTransfer && e.dataTransfer.types.includes('Files')
+            && !e.target.closest('.file-field')) {
+            e.preventDefault();
+        }
+    });
+}
+```
+
+**Cache busting:** the browser caches thumbnails by URL. If a replaced file keeps the same filename, a template such as `/files/{id}/thumb` will show the old image. Either use the function form and append a version, or have the server send `Cache-Control: no-cache` / an `ETag`:
+
+```javascript
+logo: {
+    type: 'file',
+    label: 'Logo',
+    accept: 'image/*,.pdf',
+    maxFileSize: 5 * 1024 * 1024,
+    thumbnailUrl: (record) => record.logo
+        ? `/api/customers/${record.id}/logo/thumb?v=${encodeURIComponent(record.updated || '')}`
+        : null
 }
 ```
 
@@ -1392,6 +1467,7 @@ Called when the user clicks the Save button. Receives an `edpak` object containi
 
 **edpak properties:**
 - `data` - Current form values
+- `files` - Object of `{ fieldName: File }` for `file` fields with a newly chosen file (empty object if none). See [Saving with Files](#saving-with-files).
 - `currentRecord` - Copy of the original record passed to `open()`
 - `record` - The original record passed to `open()`
 - Other app-specific properties passed when calling `open()`
@@ -1707,6 +1783,168 @@ $(document).on('recedit-notice', function(event, notice) {
         alert(`Error: ${notice.title}\n${notice.message}`);
     }
 });
+```
+
+---
+
+## Saving with Files
+
+When the form has `file` fields, `_handleSave()` sets `edpak.files = { fieldName: File }` (non-transient fields with a newly chosen file only) right after `edpak.formdata`, so it is available to `validateForm` and `onSave`. `edpak.formdata[field]` holds the filename: the new name, `''` (delete), or the unchanged existing name.
+
+### `editor.submit(url, edpak, opts)`
+
+Helper for `onSave` that sends **one multipart request** containing the record JSON and the file parts. It uses `XMLHttpRequest` because `fetch` cannot report upload progress.
+
+```javascript
+const editor = new RecEdit({
+    fields: {
+        id:   { type: 'text', key: true },
+        name: { type: 'text', label: 'Name' },
+        logo: {
+            type: 'file', label: 'Logo',
+            accept: 'image/*,.pdf', maxFileSize: 5 * 1024 * 1024,
+            thumbnailUrl: '/api/customers/{id}/logo/thumb'
+        }
+    },
+    validateForm: (edpak) => edpak.formdata.logo === ''
+        ? [{ name: 'logo', status: 'A logo is required' }] : null,
+    onSave: (edpak) => editor.submit('/api/customers', edpak, {
+        headers: { 'X-CSRFToken': csrfToken }
+    })
+});
+```
+
+| `opts` property | Default | Description |
+|-----------------|---------|-------------|
+| `method` | `'POST'` | HTTP method |
+| `headers` | `{}` | Extra request headers (e.g. a CSRF token). A `Content-Type` header is **ignored** (with a console warning) because the browser must generate the multipart boundary itself. |
+| `dataField` | `'data'` | Name of the multipart part holding `JSON.stringify(edpak.formdata)`. Must not match the name of any file field. |
+| `withCredentials` | `false` | Send credentials on cross-origin requests. Same-origin cookies are always sent. |
+
+**Result:** on 2xx the promise resolves with the parsed JSON body (or `null` if empty). Because `onSave` returns it, the existing code merges it into `edpak.currentRecord`. The server should return the saved record including the stored filename.
+
+**Errors** (the promise rejects and the dialog stays open with the selected files kept, so the user can retry):
+
+| Response | Result |
+|----------|--------|
+| 4xx/5xx with a JSON array `[{ name, status }]` | `displayFieldErrors()` is called and an `Error('')` is thrown (an empty message means the error was already handled) |
+| HTTP 413 (typically an HTML body from `MAX_CONTENT_LENGTH` or a reverse proxy) | `Error(messages.fileTooLarge)` |
+| Other 4xx/5xx | `Error` with the server's `message` / `status` / `error` JSON property, or a generic `Save failed (HTTP nnn)` |
+| Network error | `Error(messages.uploadFailed)` |
+| Aborted (dialog closed, see below) | `Error('')` with `aborted = true`; no post-save work runs |
+
+Hosts that don't want the helper can build their own request from `edpak.formdata` and `edpak.files`.
+
+### After a successful save
+
+Before `_afterSave()`, each file field is re-populated with the committed value: `result[field]` if `onSave` returned the saved record containing that field, otherwise `edpak.formdata[field]`. `currentRecord[field]` is updated to match and `edpak.files` is cleared. This matters for `RecEditInlineForm`, which stays open. If the save fails nothing is reset.
+
+### Upload progress bar
+
+There is **one** `<progress>` per editor (the browser reports progress for the whole request only). It is shown in the dialog's button pane (left side) or the inline form's `.recedit-button-bar`, when the **total** size of the files being sent is at least `fileProgressMinSize` bytes (default 1 MB; `0` = always, `false` = never). The percentage is `event.loaded / event.total`, and the label comes from `messages.uploading`. The bar is hidden when the request finishes, fails or is aborted.
+
+Note that the bar reaches 100% when the browser has *sent* the data. The server may still be processing, so the bar stays at 100% and the Save button stays in its "Saving..." state until the response arrives.
+
+Hosts using their own transport can drive the bar with the public methods `editor.showUploadProgress(pct)` and `editor.hideUploadProgress()`. `_handleSave()` always hides the bar when `onSave` completes or throws. A host using its own transport is responsible for its own abort handling.
+
+### Closing during a save
+
+Only the buttons are disabled while saving, so the dialog can still be closed (Escape or the title-bar close) during an upload. This is allowed, but the in-flight request is aborted (also on `destroy()`), `onCancel` still fires, and no post-save work (commit, `_afterSave()`, error notice) runs. The inline form's Cancel button is disabled while saving, so only `destroy()` applies there.
+
+**Limitation:** an abort is only a clean cancel while the request body is still uploading. A request aborted before the server has received the whole body never reaches the handler's save logic (Werkzeug raises a client-disconnect error while parsing the body), so nothing is stored. Once the body has been fully received and the server is already processing, the abort cannot undo it, and the response is lost, so the client treats it as a failed save. The server's save must therefore be atomic.
+
+### Server contract
+
+One endpoint receives a multipart body:
+
+| Part | Content |
+|------|---------|
+| `data` | JSON of `edpak.formdata`. File fields hold a filename: the new name, `''` (delete), or the unchanged existing name. |
+| `<fieldName>` | File bytes, present only if a new file was chosen for that field. |
+
+Rules per file field:
+
+1. File part present → validate, store, set the record's filename. This replaces any existing file.
+2. No file part, `data[field] == ''` and the record has a file → delete the stored file and clear the filename.
+3. Otherwise → **leave unchanged and ignore the client-supplied filename.**
+
+Return the saved record as JSON (including the stored filename). Return field errors as HTTP 422 with `[{ "name": ..., "status": ... }]`.
+
+Server requirements:
+
+- **Never trust the client filename for paths.** Store under a server-built path such as `uploads/<record_id>/<field>` and keep a sanitised original name for display (e.g. `werkzeug.utils.secure_filename`).
+- Validate size and content type server-side by sniffing content, not by extension or client MIME. Exceeding `MAX_CONTENT_LENGTH` yields an HTML 413, which the client maps to `messages.fileTooLarge`. Raise any reverse-proxy body limit (e.g. nginx `client_max_body_size`) to at least that value.
+- Check authorisation on save, download and thumbnail endpoints, including that the user may edit the record named by `data.id`. Use a CSRF token via `submit()` `headers`.
+- Serve downloads with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`. Never serve SVG inline.
+- Thumbnails: generate on upload (or lazily and cache). Return 404 for non-images; the client then shows only the filename.
+- **Atomicity:** validate all uploaded files *before* any database write and make the save one transaction. A validation failure (422) must not leave a new record behind, otherwise the client's retry creates a duplicate because it never received an id. Write new files to a temporary location, commit the DB, then move them into place, and delete replaced or removed files only after the commit succeeds.
+- A new record gets its ID on this same request, so there is no "key unknown yet" problem.
+
+### Illustrative Flask sketch (not production-ready)
+
+No auth, no content sniffing; `load_record`, `new_record`, `allowed` and `db_save` are placeholders. The ordering (validate, then write, then move files, then delete old files) is the point.
+
+```python
+import json, os, shutil, tempfile
+from flask import Flask, request, jsonify
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+UPLOADS = "uploads"
+FILE_FIELDS = ["logo"]
+
+def field_dir(rec_id, field):
+    return os.path.join(UPLOADS, str(rec_id), field)
+
+@app.post("/api/customers")
+def save_customer():
+    data = json.loads(request.form["data"])
+    rec = load_record(data.get("id")) or new_record()   # also check the user may edit this record
+
+    # 1. Validate every upload before touching the database
+    uploads = {}
+    for field in FILE_FIELDS:
+        f = request.files.get(field)
+        if f and f.filename:
+            if not allowed(f):                          # sniff content and check size
+                return jsonify([{"name": field, "status": "File type not allowed"}]), 422
+            uploads[field] = f
+
+    # 2. Decide per field what happens
+    to_delete = []
+    for field in FILE_FIELDS:
+        if field in uploads:
+            rec[field] = secure_filename(uploads[field].filename) or "file"   # display name only, never a path
+        elif data.get(field) == "" and rec.get(field):
+            to_delete.append(field)
+            rec[field] = ""
+        # otherwise unchanged: ignore data[field]
+    rec["name"] = data["name"]
+
+    # 3. Stage new files, commit the DB, then move files into place and delete old ones
+    staged = {}
+    tmp = tempfile.mkdtemp()
+    try:
+        for field, f in uploads.items():
+            path = os.path.join(tmp, field)
+            f.save(path)
+            staged[field] = path
+        db_save(rec)                                    # one transaction; assigns rec["id"] for new records
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+    for field, path in staged.items():
+        folder = field_dir(rec["id"], field)
+        shutil.rmtree(folder, ignore_errors=True)
+        os.makedirs(folder)
+        shutil.move(path, os.path.join(folder, "original"))
+        # generate a thumbnail here (e.g. Pillow); skip for non-images
+    for field in to_delete:
+        shutil.rmtree(field_dir(rec["id"], field), ignore_errors=True)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return jsonify(rec)
 ```
 
 ---
@@ -2380,6 +2618,9 @@ You can customize the appearance by targeting these classes:
 - `.char-counter` - Character counter
 - `.char-counter-warning` - Character counter warning (near limit)
 - `.field-error` - Inline field validation error message (hidden by default, shown by `displayFieldErrors()`)
+- `.file-field` - Wrapper of a `file` field (flex row). Children: `.file-thumb`, `.file-body`, `.file-current` (with `.file-current-name` and `.file-remove-btn`), `.file-native-input`, `.file-drop-hint`
+- `.file-drop-active` - Added to `.file-field` while a file is dragged over it
+- `.recedit-upload-progress` - The single form-level upload progress bar (contains a `<progress>` and `.recedit-upload-label`), placed in the dialog button pane or the inline form's `.recedit-button-bar`
 - `.field-required` - Applied to the field group when a field is marked required (via `required: true` on the field config, or via `dynamicFieldProps.requiredFields`). Triggers the red asterisk `*` indicator after the label via CSS `::after`.
 - `.recedit-btn-left` - Applied automatically to custom buttons whose `align` is `'left'` or unset (the default). Uses `margin-right: auto` inside the flex button bar to push all subsequent buttons to the right.
 

@@ -3,7 +3,7 @@
  * RecEdit - A jQuery UI-based record editor dialog component
  * 
  * Provides a flexible, feature-rich dialog for editing record data with support for:
- * - Multiple field types (text, textarea, checkbox, select, date, password, autocomplete, spinner, slider)
+ * - Multiple field types (text, textarea, checkbox, select, date, password, autocomplete, spinner, slider, file)
  * - Tabbed form layouts
  * - Field validation
  * - jQuery UI theme integration
@@ -53,7 +53,14 @@ class RecEdit {
                 save: 'Save',
                 cancel: 'Cancel',
                 saving: 'Saving...',
-                error: 'Error'
+                error: 'Error',
+                removeFile: 'Remove',
+                dropHint: 'or drop a file here',
+                fileMaxSize: 'max size {size}',
+                fileTooLarge: 'File is too large',
+                fileTypeNotAllowed: 'File type not allowed',
+                uploadFailed: 'Upload failed',
+                uploading: 'Uploading... {pct}%'
             },
             onSave: null,
             onCancel: null,
@@ -100,6 +107,9 @@ class RecEdit {
             tabs: null,              // Array of tab definitions or null for no tabs
             tabsCollapsible: false,  // Whether tabs can be collapsed
             tabsActive: 0,           // Index of initially active tab
+
+            // File field upload options
+            fileProgressMinSize: 1048576, // Minimum total upload size (bytes) before the progress bar is shown. 0 = always show, false = never show.
             
             ...options
         };
@@ -117,6 +127,8 @@ class RecEdit {
         this._fieldMasks = new Map();   // Resolved effective mask per field name (includes dynamic overrides)
         this.isInitialized = false;
         this.closedAfterSave = false;
+        this._activeUpload = null;       // in-flight XHR created by submit(), aborted on close/destroy
+        this._$uploadProgress = null;    // cached form-level upload progress bar element
     }
 
     /**
@@ -374,6 +386,7 @@ class RecEdit {
             },
             buttons: this._createDialogButtons(),
             close: () => {
+                this._abortUpload();
                 if (this.options.onCancel && !this.closedAfterSave) {
                     this.options.onCancel();
                 }
@@ -1071,7 +1084,7 @@ class RecEdit {
      * Creates an input element based on the specified field configuration type.
      * 
      * Supports multiple input types including text, textarea, checkbox, dropdown/select,
-     * date, password, hidden, autocomplete, spinner, and slider. Falls back to text input
+     * date, password, hidden, autocomplete, spinner, slider, and file. Falls back to text input
      * for unknown types.
      * 
      * @param {string} fieldName - The name attribute of the input field
@@ -1109,6 +1122,8 @@ class RecEdit {
                 return this._createSlider(fieldName, fieldConfig);
             case 'htmldiv':
                 return this._createHtmlDiv(fieldName, fieldConfig);
+            case 'file':
+                return this._createFileInput(fieldName, fieldConfig);
             default:
                 return this._createTextInput(fieldName, fieldConfig);
         }
@@ -1993,6 +2008,434 @@ class RecEdit {
     }
 
     /**
+     * Creates a native `<input type="file">` based field with an optional thumbnail, a
+     * filename/Remove display for the existing or newly chosen file, and (by default) a
+     * drag-and-drop target covering the whole field.
+     *
+     * State is kept in `$wrapper.data('fileState') = { original, file, cleared, previewUrl }`
+     * and is read by `_setInputValue()`, `_getFormData()`, `getFieldValue()` and `_getFileUploads()`.
+     *
+     * @param {string} fieldName - The name attribute for the underlying native file input
+     * @param {Object} fieldConfig - Configuration object for the field
+     * @param {string} [fieldConfig.accept] - Native `accept` attribute, also checked in JS
+     * @param {number} [fieldConfig.maxFileSize] - Maximum allowed file size in bytes
+     * @param {string|Function} [fieldConfig.thumbnailUrl] - URL template or function(record, fieldName) → url|null
+     * @param {number|string} [fieldConfig.thumbnailSize=64] - Thumbnail max width/height: a number (px) or a CSS length string (e.g. '5em')
+     * @param {boolean} [fieldConfig.dropZone=true] - Whether the whole field is a drag-and-drop target
+     * @param {boolean} [fieldConfig.readonly] - Whether the field is read-only
+     * @param {boolean} [fieldConfig.readOnly] - Alternative read-only property
+     * @param {boolean} [fieldConfig.disabled] - Whether the field is disabled
+     * @returns {jQuery} A jQuery object representing the field wrapper (`div.file-field`)
+     * @private
+     */
+    _createFileInput(fieldName, fieldConfig) {
+        const isReadonly = !!(fieldConfig.readonly || fieldConfig.readOnly || fieldConfig.disabled);
+        const dropZoneEnabled = fieldConfig.dropZone !== false && !isReadonly;
+
+        const $wrapper = $('<div>', { class: 'file-field' });
+        if (isReadonly) $wrapper.addClass('readonly-field');
+
+        const $thumb = $('<img>', { class: 'file-thumb', alt: '' }).hide();
+        $thumb.on('error', function() { $(this).hide().attr('src', ''); });
+        // thumbnailSize: number (px) or CSS length string (e.g. '5em'); default 64px
+        let thumbSize = fieldConfig.thumbnailSize;
+        if (typeof thumbSize === 'number' && thumbSize > 0) {
+            thumbSize = thumbSize + 'px';
+        } else if (typeof thumbSize !== 'string' || !thumbSize.trim()) {
+            thumbSize = '64px';
+        }
+        $thumb.css({ maxWidth: thumbSize, maxHeight: thumbSize, objectFit: 'contain' });
+
+        const $body = $('<div>', { class: 'file-body' });
+        const $current = $('<div>', { class: 'file-current' }).hide();
+        const $filename = $('<span>', { class: 'file-current-name' });
+        const $removeBtn = $('<button>', {
+            type: 'button',
+            class: 'file-remove-btn',
+            text: this.options.messages.removeFile || 'Remove'
+        });
+        if (this.options.useJQueryUITheme) $removeBtn.addClass('ui-button ui-widget ui-corner-all');
+        $current.append($filename, ' ', $removeBtn);
+
+        const $nativeInput = $('<input>', {
+            type: 'file',
+            name: fieldName,
+            class: 'file-native-input'
+        });
+        if (fieldConfig.accept) $nativeInput.attr('accept', fieldConfig.accept);
+        if (isReadonly) $nativeInput.prop('disabled', true).attr('tabindex', '-1');
+
+        $body.append($current, $nativeInput);
+
+        if (dropZoneEnabled) {
+            const restrictions = this._buildFileRestrictionText(fieldConfig);
+            const baseHint = this.options.messages.dropHint || 'or drop a file here';
+            const $hint = $('<span>', {
+                class: 'file-drop-hint',
+                text: restrictions ? `${baseHint} (${restrictions})` : baseHint
+            });
+            $body.append($hint);
+        }
+
+        $wrapper.append($thumb, $body);
+        $wrapper.data('fileState', { original: '', file: null, cleared: false, previewUrl: null });
+
+        // Native file selection (also reached by the drag-and-drop handler below, which assigns
+        // to $nativeInput[0].files and dispatches a native 'change' event)
+        $nativeInput.on('change', () => {
+            const file = ($nativeInput[0].files && $nativeInput[0].files[0]) || null;
+            this._handleFileSelected(fieldName, $wrapper, fieldConfig, file);
+        });
+
+        // Remove button — type="button" so it never submits the form
+        $removeBtn.on('click', (e) => {
+            e.preventDefault();
+            this._handleFileRemove(fieldName, $wrapper, fieldConfig);
+        });
+
+        if (dropZoneEnabled) {
+            this._attachFileDropHandlers($wrapper, $nativeInput);
+        }
+
+        this._renderFileCurrent($wrapper);
+
+        return $wrapper;
+    }
+
+    /**
+     * Formats a byte count as a short string, e.g. 153600 -> '150K', 5242880 -> '5M', 1572864 -> '1.5M'.
+     * @param {number} bytes
+     * @returns {string}
+     * @private
+     */
+    _formatFileSize(bytes) {
+        const units = ['B', 'K', 'M', 'G', 'T'];
+        let value = Number(bytes);
+        let i = 0;
+        while (value >= 1024 && i < units.length - 1) {
+            value /= 1024;
+            i++;
+        }
+        return `${parseFloat(value.toFixed(1))}${units[i]}`;
+    }
+
+    /**
+     * Builds the text describing a file field's restrictions (accepted types and max size),
+     * e.g. '.jpg, .jpeg max size 150K'. Returns '' when the field has neither restriction.
+     * @param {Object} fieldConfig
+     * @returns {string}
+     * @private
+     */
+    _buildFileRestrictionText(fieldConfig) {
+        const parts = [];
+        if (fieldConfig.accept) {
+            const types = String(fieldConfig.accept).split(',').map(s => s.trim()).filter(Boolean);
+            if (types.length) parts.push(types.join(', '));
+        }
+        if (fieldConfig.maxFileSize > 0) {
+            const tpl = this.options.messages.fileMaxSize || 'max size {size}';
+            parts.push(tpl.replace('{size}', this._formatFileSize(fieldConfig.maxFileSize)));
+        }
+        return parts.join(' ');
+    }
+
+    /**
+     * Validates a candidate file against `accept` and `maxFileSize`.
+     * @param {File} file
+     * @param {Object} fieldConfig
+     * @returns {string|null} An error message, or null if the file is acceptable
+     * @private
+     */
+    _validateFileSelection(file, fieldConfig) {
+        if (fieldConfig.maxFileSize && file.size > fieldConfig.maxFileSize) {
+            return this.options.messages.fileTooLarge || 'File is too large';
+        }
+
+        if (fieldConfig.accept) {
+            const accepts = String(fieldConfig.accept).split(',').map(s => s.trim()).filter(Boolean);
+            if (accepts.length) {
+                const mime = (file.type || '').toLowerCase();
+                const name = file.name || '';
+                const extMatch = name.match(/\.[^.]+$/);
+                const ext = extMatch ? extMatch[0].toLowerCase() : '';
+
+                const matches = accepts.some(accept => {
+                    const a = accept.toLowerCase();
+                    if (a.startsWith('.')) return ext === a;
+                    if (a.endsWith('/*')) return mime ? mime.startsWith(a.slice(0, -1)) : false;
+                    return mime ? mime === a : false;
+                });
+
+                if (!matches) {
+                    return this.options.messages.fileTypeNotAllowed || 'File type not allowed';
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Handles a new file being selected (via the native picker or a drop). Validates the file,
+     * updates state and the local image preview, and clears any previous error for this field.
+     * @private
+     */
+    _handleFileSelected(fieldName, $wrapper, fieldConfig, file) {
+        this._clearFileFieldError($wrapper);
+        const state = $wrapper.data('fileState');
+        if (!file) return;
+
+        const error = this._validateFileSelection(file, fieldConfig);
+        if (error) {
+            const $nativeInput = $wrapper.find('input[type="file"]');
+            $nativeInput.val('');
+            state.file = null;
+            this._revokeFilePreview($wrapper);
+            this._applyFileThumbnail($wrapper, state.cleared ? '' : state.original, fieldConfig, fieldName);
+            this._renderFileCurrent($wrapper);
+            this.displayFieldErrors([{ name: fieldName, status: error }]);
+            return;
+        }
+
+        state.file = file;
+        state.cleared = false;
+        this._updateFilePreviewForSelection($wrapper, file);
+        this._renderFileCurrent($wrapper);
+    }
+
+    /**
+     * Handles a Remove button click. If a new file is currently selected the selection is
+     * discarded and the field reverts to its original value; otherwise the value becomes ''
+     * (deleting the existing file on save).
+     * @private
+     */
+    _handleFileRemove(fieldName, $wrapper, fieldConfig) {
+        this._clearFileFieldError($wrapper);
+        const state = $wrapper.data('fileState');
+        const $nativeInput = $wrapper.find('input[type="file"]');
+        $nativeInput.val('');
+        this._revokeFilePreview($wrapper);
+
+        if (state.file) {
+            // Discard the new selection; the existing file (if any) is kept
+            state.file = null;
+            state.cleared = false;
+            this._applyFileThumbnail($wrapper, state.original, fieldConfig, fieldName);
+        } else {
+            state.cleared = true;
+            this._applyFileThumbnail($wrapper, '', fieldConfig, fieldName);
+        }
+
+        this._renderFileCurrent($wrapper);
+        $wrapper.trigger('change');
+    }
+
+    /**
+     * Attaches drag-and-drop handlers to the field wrapper so the whole field acts as a drop
+     * target. The dropped file is assigned to the native input via a DataTransfer and a native
+     * 'change' event is dispatched, reusing the same validation/state/preview path as the picker.
+     * @private
+     */
+    _attachFileDropHandlers($wrapper, $nativeInput) {
+        let dragCounter = 0;
+        const activeCls = this.options.useJQueryUITheme ? 'file-drop-active ui-state-highlight' : 'file-drop-active';
+
+        const hasFiles = (e) => {
+            const dt = e.originalEvent && e.originalEvent.dataTransfer;
+            return !!(dt && dt.types && Array.prototype.indexOf.call(dt.types, 'Files') !== -1);
+        };
+
+        $wrapper.on('dragenter', (e) => {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            dragCounter++;
+            e.originalEvent.dataTransfer.dropEffect = 'copy';
+            $wrapper.addClass(activeCls);
+        });
+
+        $wrapper.on('dragover', (e) => {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            e.originalEvent.dataTransfer.dropEffect = 'copy';
+        });
+
+        $wrapper.on('dragleave', (e) => {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            dragCounter = Math.max(0, dragCounter - 1);
+            if (dragCounter === 0) $wrapper.removeClass(activeCls);
+        });
+
+        $wrapper.on('drop', (e) => {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            dragCounter = 0;
+            $wrapper.removeClass(activeCls);
+
+            const dt = e.originalEvent.dataTransfer;
+            let file = null;
+
+            if (dt.items && dt.items.length) {
+                for (let i = 0; i < dt.items.length; i++) {
+                    const item = dt.items[i];
+                    if (item.kind !== 'file') continue;
+                    const entry = (typeof item.webkitGetAsEntry === 'function') ? item.webkitGetAsEntry() : null;
+                    if (entry && entry.isDirectory) continue;
+                    file = item.getAsFile();
+                    if (file) break;
+                }
+            } else if (dt.files && dt.files.length) {
+                file = dt.files[0];
+            }
+
+            if (!file) return;
+
+            const nativeEl = $nativeInput[0];
+            try {
+                const transfer = new DataTransfer();
+                transfer.items.add(file);
+                nativeEl.files = transfer.files;
+                nativeEl.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (err) {
+                // Fallback for browsers that don't support assigning input.files:
+                // handle the dropped file directly through the same validation/state path.
+                const fieldName = nativeEl.name;
+                const fieldConfig = this.options.fields[fieldName];
+                this._handleFileSelected(fieldName, $wrapper, fieldConfig, file);
+            }
+        });
+    }
+
+    /**
+     * Revokes any active object URL used for a local image preview and clears it from state.
+     * @private
+     */
+    _revokeFilePreview($wrapper) {
+        const state = $wrapper.data('fileState');
+        if (state && state.previewUrl) {
+            URL.revokeObjectURL(state.previewUrl);
+            state.previewUrl = null;
+        }
+    }
+
+    /**
+     * Creates (and tracks) a local object URL preview for a newly selected image file.
+     * For a non-image file the thumbnail is cleared, so the previous file's image is not
+     * shown next to the new filename.
+     * @private
+     */
+    _updateFilePreviewForSelection($wrapper, file) {
+        this._revokeFilePreview($wrapper);
+        const $thumb = $wrapper.find('.file-thumb');
+        if (file && file.type && file.type.startsWith('image/')) {
+            const url = URL.createObjectURL(file);
+            $wrapper.data('fileState').previewUrl = url;
+            $thumb.attr('src', url).show();
+        } else {
+            $thumb.hide().attr('src', '');
+        }
+    }
+
+    /**
+     * Resolves `fieldConfig.thumbnailUrl` (string template or function) against the current
+     * record merged with the candidate value for this field.
+     * @returns {string|null}
+     * @private
+     */
+    _resolveThumbnailUrl(fieldConfig, fieldName, value) {
+        if (!fieldConfig.thumbnailUrl || !value) return null;
+        const record = { ...((this.edpak && this.edpak.currentRecord) || {}), [fieldName]: value };
+
+        if (typeof fieldConfig.thumbnailUrl === 'function') {
+            return fieldConfig.thumbnailUrl(record, fieldName) || null;
+        }
+
+        return String(fieldConfig.thumbnailUrl).replace(/\{(\w+)\}/g, (m, key) => {
+            const v = record[key];
+            return (v !== undefined && v !== null) ? encodeURIComponent(v) : '';
+        });
+    }
+
+    /**
+     * Sets the thumbnail `<img>` src from `thumbnailUrl` for the given value, or hides it
+     * when there is no URL (empty value, no thumbnailUrl configured, or the image fails to load
+     * — handled by the `error` handler attached in `_createFileInput()`).
+     * @private
+     */
+    _applyFileThumbnail($wrapper, value, fieldConfig, fieldName) {
+        const $thumb = $wrapper.find('.file-thumb');
+        const url = this._resolveThumbnailUrl(fieldConfig, fieldName, value);
+        if (url) {
+            $thumb.attr('src', url).show();
+        } else {
+            $thumb.hide().attr('src', '');
+        }
+    }
+
+    /**
+     * Updates the filename + Remove button display based on the field's current state.
+     * While a file is present the thumbnail, filename and Remove button are shown on one line
+     * and the native "Choose file" input and drop hint are hidden; removing the file restores them.
+     * The Remove button is hidden for read-only fields even when a file is present.
+     * @private
+     */
+    _renderFileCurrent($wrapper) {
+        const state = $wrapper.data('fileState') || {};
+        const $current = $wrapper.find('.file-current');
+        const $filename = $wrapper.find('.file-current-name');
+        const $removeBtn = $wrapper.find('.file-remove-btn');
+        const $picker = $wrapper.find('.file-native-input, .file-drop-hint');
+        const isReadonly = $wrapper.hasClass('readonly-field');
+
+        const displayName = state.file ? state.file.name : (!state.cleared ? (state.original || '') : '');
+
+        if (displayName) {
+            $filename.text(displayName);
+            $current.show();
+            $removeBtn.toggle(!isReadonly);
+            $picker.hide();
+            $wrapper.addClass('has-file');
+        } else {
+            $filename.text('');
+            $current.hide();
+            $picker.show();
+            $wrapper.removeClass('has-file');
+        }
+    }
+
+    /**
+     * Clears this field's own error display (if any) without affecting other fields' errors.
+     * Called on every new selection, drop or Remove so a stale message doesn't linger.
+     * @private
+     */
+    _clearFileFieldError($wrapper) {
+        const $group = $wrapper.closest('[data-field]');
+        $group.find('.field-error').hide().text('');
+        $wrapper.removeClass('field-invalid');
+    }
+
+    /**
+     * Returns `{ fieldName: File }` for every non-transient `file` field that currently has a
+     * newly selected file. Used by `_handleSave()` to populate `edpak.files`.
+     * @returns {Object<string, File>}
+     * @private
+     */
+    _getFileUploads() {
+        const files = {};
+        for (const [fieldName, $input] of this.fieldInputs.entries()) {
+            const fieldConfig = this.options.fields[fieldName];
+            if (!fieldConfig || fieldConfig.transient === true) continue;
+            if ((fieldConfig.type || '').toLowerCase() !== 'file') continue;
+
+            const state = $input.data('fileState');
+            if (state && state.file) {
+                files[fieldName] = state.file;
+            }
+        }
+        return files;
+    }
+
+    /**
      * Populates form with record data
      */
     async _populateForm(record) {
@@ -2014,7 +2457,7 @@ class RecEdit {
                     : fieldConfig.defaultValue;
             }
 
-            await this._setInputValue($input, value, fieldConfig);
+            await this._setInputValue($input, value, fieldConfig, fieldName);
         }
     }
 
@@ -2030,15 +2473,29 @@ class RecEdit {
      * @param {string} [fieldConfig.type='text'] - The type of input field
      * @param {string} [fieldConfig.dateDisplayFormat] - Date display format string for date inputs
      * @param {string} [fieldConfig.dateRecordFormat] - Date record format string for date inputs
+     * @param {string} [fieldName] - The field name. Optional for backward compatibility with
+     *   existing 3-argument callers, but required for the 'file' type (used to resolve
+     *   `thumbnailUrl` and to merge the candidate value into the current record).
      * @returns {Promise<void>}
      * @private
      */
-    async _setInputValue($input, value, fieldConfig) {
+    async _setInputValue($input, value, fieldConfig, fieldName) {
         if (!$input || !$input.length) return;
 
         const type = (fieldConfig.type || 'text').toLowerCase();
 
         switch (type) {
+            case 'file': {
+                this._revokeFilePreview($input);
+                const $nativeInput = $input.find('input[type="file"]');
+                $nativeInput.val('');
+                const original = value || '';
+                $input.data('fileState', { original, file: null, cleared: false, previewUrl: null });
+                this._renderFileCurrent($input);
+                this._applyFileThumbnail($input, original, fieldConfig, fieldName);
+                break;
+            }
+
             case 'radiogroup':
                 // Check the radio whose value matches; uncheck all others
                 $input.find('input[type="radio"]').each(function() {
@@ -2214,7 +2671,7 @@ class RecEdit {
         for (const [fieldName, $field] of this.fieldInputs.entries()) {
             const fieldConfig = this.options.fields[fieldName];
             // console.log(`Field config for ${fieldName}: ${JSON.stringify(fieldConfig)}`);
-            if (fieldConfig && !fieldConfig.readOnly && !fieldConfig.readonly && !(fieldConfig.type === 'hidden')) {
+            if (fieldConfig && !fieldConfig.readOnly && !fieldConfig.readonly && !(fieldConfig.type === 'hidden') && !(fieldConfig.type === 'file')) {
                 nextFields.push(fieldName);
             }
         }
@@ -2367,6 +2824,18 @@ class RecEdit {
             const type = (fieldConfig.type || 'text').toLowerCase();
 
             switch (type) {
+                case 'file': {
+                    const state = $input.data('fileState') || {};
+                    if (state.file) {
+                        data[fieldName] = state.file.name;
+                    } else if (state.cleared) {
+                        data[fieldName] = '';
+                    } else {
+                        data[fieldName] = state.original || '';
+                    }
+                    break;
+                }
+
                 case 'radiogroup': {
                     const $checked = $input.find('input[type="radio"]:checked');
                     data[fieldName] = $checked.length ? $checked.val() : null;
@@ -2452,6 +2921,7 @@ class RecEdit {
 
         const formData = this._getFormData();
         this.edpak.formdata = formData; // Update edpak data with current form data
+        this.edpak.files = this._getFileUploads(); // Newly selected File objects, keyed by field name
 
         // Validate if validator provided
         if (this.options.validateForm) {
@@ -2488,22 +2958,68 @@ class RecEdit {
             }
             
             this._setButtonsNormal();
+            this._hideUploadProgress();
             
             // Update current record with returned data if provided
             if (result && typeof result === 'object') {
                 this.edpak.currentRecord = { ...this.edpak.currentRecord, ...result };
             }
             
+            // Commit file field state (filename, thumbnail, cleared flag) from the save result
+            await this._commitFileFields(result);
+            
             // Delegate post-save behaviour — subclasses can override _afterSave()
             await this._afterSave();
         } catch (error) {
+            if (error && error.aborted === true) {
+                // Dialog was closed mid-upload (see _abortUpload()). The editor may already be
+                // tearing down, so skip commit, _afterSave() and the error notice entirely.
+                return;
+            }
             // only show error message if error has a message property, otherwise assume onSave handled the error 
             // (e.g. by showing field validation errors) and just re-enable buttons
             if (error.message && error.message.length > 0) {
                 this._triggerNotice({type: 'error', message: error.message || 'Failed to save record'});
             }
             this._setButtonsNormal();
+            this._hideUploadProgress();
         }
+    }
+
+
+    /**
+     * Re-runs the 'file' field logic of `_setInputValue()` for every file field using the
+     * committed value: `result[field]` when the host's `onSave` returned the saved record
+     * containing that field, otherwise `edpak.formdata[field]` (the chosen filename, or ''
+     * if removed). Also updates `edpak.currentRecord[field]` and clears `edpak.files` so the
+     * saved File objects don't linger until the next save.
+     *
+     * Guarded against a destroyed editor (`this.$form` null).
+     *
+     * @param {Object|null} result - The value returned by onSave()
+     * @private
+     */
+    async _commitFileFields(result) {
+        if (!this.$form) return; // editor was destroyed mid-save
+
+        for (const [fieldName, $input] of this.fieldInputs.entries()) {
+            const fieldConfig = this.options.fields[fieldName];
+            if (!fieldConfig || (fieldConfig.type || '').toLowerCase() !== 'file') continue;
+
+            const hasResultValue = result && typeof result === 'object'
+                && Object.prototype.hasOwnProperty.call(result, fieldName);
+            const committedValue = hasResultValue
+                ? result[fieldName]
+                : ((this.edpak.formdata && this.edpak.formdata[fieldName]) ?? '');
+
+            await this._setInputValue($input, committedValue, fieldConfig, fieldName);
+
+            if (this.edpak.currentRecord) {
+                this.edpak.currentRecord[fieldName] = committedValue;
+            }
+        }
+
+        this.edpak.files = {};
     }
 
 
@@ -2526,10 +3042,10 @@ class RecEdit {
             this.$dialog.dialog('open');
             this._initializeSelectMenus();
             
-            // Focus first editable input (skip hidden and readonly fields), then fire onAfterShow
+            // Focus first editable input (skip hidden, readonly and file fields), then fire onAfterShow
             setTimeout(async () => {
                 if (!this.$form) return; // editor was destroyed before timer fired
-                const $firstInput = this.$form.find('input:not([type="hidden"]):not([readonly]):visible, textarea:not([readonly]):visible, select:visible').first();
+                const $firstInput = this.$form.find('input:not([type="hidden"]):not([type="file"]):not([readonly]):visible, textarea:not([readonly]):visible, select:visible').first();
                 if ($firstInput.length) {
                     $firstInput.focus();
                 }
@@ -2592,7 +3108,7 @@ class RecEdit {
             return;
         }
 
-        await this._setInputValue($input, value, fieldConfig);
+        await this._setInputValue($input, value, fieldConfig, fieldName);
         
         // Update current record
         if (this.edpak && this.edpak.currentRecord) {
@@ -2643,6 +3159,13 @@ class RecEdit {
         const type = (fieldConfig.type || 'text').toLowerCase();
 
         switch (type) {
+            case 'file': {
+                const state = $input.data('fileState') || {};
+                if (state.file) return state.file.name;
+                if (state.cleared) return '';
+                return state.original || '';
+            }
+
             case 'radiogroup': {
                 const $checked = $input.find('input[type="radio"]:checked');
                 return $checked.length ? $checked.val() : null;
@@ -2822,6 +3345,246 @@ class RecEdit {
     }
 
     /**
+     * Returns the element that the form-level upload progress bar should be inserted into
+     * (prepended, so it sits opposite the right-aligned Save/Cancel buttons).
+     * Base class: the jQuery UI dialog's button pane.
+     * Overridden by `RecEditInlineForm` to target its own `.recedit-button-bar`.
+     * @returns {jQuery|null}
+     * @private
+     */
+    _getProgressHost() {
+        if (!this.$dialog) return null;
+        const $host = this.$dialog.closest('.ui-dialog').find('.ui-dialog-buttonpane');
+        return $host.length ? $host : null;
+    }
+
+    /**
+     * Shows (creating if necessary) the single form-level upload progress bar, setting its
+     * value and label. Re-creates or re-inserts the element if it is no longer attached to the
+     * DOM or no longer inside the current host — `_setButtonState()` rebuilds the dialog's
+     * button pane via `dialog('option', 'buttons', ...)`, which detaches a previously inserted bar.
+     *
+     * @param {number} pct - Percentage complete (0-100)
+     * @private
+     */
+    _showUploadProgress(pct) {
+        const $host = this._getProgressHost();
+        if (!$host || !$host.length) return;
+
+        if (!this._$uploadProgress || !$.contains(document.documentElement, this._$uploadProgress[0])) {
+            this._$uploadProgress = $('<div>', { class: 'recedit-upload-progress' });
+            this._$uploadProgress.append(
+                $('<progress>', { max: 100, value: 0 })
+                    .toggleClass('ui-widget-header ui-corner-all', !!this.options.useJQueryUITheme),
+                $('<span>', { class: 'recedit-upload-label' })
+            );
+        }
+
+        if (this._$uploadProgress.parent()[0] !== $host[0]) {
+            $host.prepend(this._$uploadProgress);
+        }
+
+        const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+        this._$uploadProgress.find('progress').val(clamped);
+        const template = this.options.messages.uploading || 'Uploading... {pct}%';
+        this._$uploadProgress.find('.recedit-upload-label').text(template.replace('{pct}', clamped));
+        this._$uploadProgress.show();
+    }
+
+    /**
+     * Hides the form-level upload progress bar and resets its value to 0.
+     * Safe to call when it was never created or after `destroy()`.
+     * @private
+     */
+    _hideUploadProgress() {
+        if (this._$uploadProgress) {
+            this._$uploadProgress.hide();
+            this._$uploadProgress.find('progress').val(0);
+        }
+    }
+
+    /**
+     * Public alias of `_showUploadProgress()`, for hosts that drive the bar with their own
+     * upload transport instead of `submit()`.
+     * @param {number} pct - Percentage complete (0-100)
+     */
+    showUploadProgress(pct) {
+        this._showUploadProgress(pct);
+    }
+
+    /**
+     * Public alias of `_hideUploadProgress()`, for hosts that drive the bar with their own
+     * upload transport instead of `submit()`.
+     */
+    hideUploadProgress() {
+        this._hideUploadProgress();
+    }
+
+    /**
+     * Aborts the in-flight XHR created by `submit()`, if any. `submit()`'s abort handler
+     * rejects with `error.aborted = true`, which `_handleSave()` recognises so it can skip
+     * commit, `_afterSave()` and the error notice. Called from the dialog's close handler and
+     * from `destroy()`, since the dialog may still be closed (Escape / title-bar close) while
+     * an upload is in flight.
+     * @private
+     */
+    _abortUpload() {
+        if (this._activeUpload) {
+            this._activeUpload.abort();
+            this._activeUpload = null;
+        }
+    }
+
+    /**
+     * Revokes any active local image-preview object URLs on 'file' fields. Called from
+     * `destroy()`; the fields themselves are removed with the form, so this only needs to
+     * release the URL, not touch the DOM.
+     * @private
+     */
+    _revokeAllFilePreviews() {
+        for (const [fieldName, $input] of this.fieldInputs.entries()) {
+            const fieldConfig = this.options.fields[fieldName];
+            if (fieldConfig && (fieldConfig.type || '').toLowerCase() === 'file') {
+                this._revokeFilePreview($input);
+            }
+        }
+    }
+
+    /**
+     * Sends `edpak.formdata` (as a JSON part) plus every `edpak.files[field]` (as file parts)
+     * in a single multipart POST, using XMLHttpRequest so upload progress can be reported
+     * (fetch cannot report upload progress). Drives the form-level progress bar when the total
+     * size of the files being sent is at least `options.fileProgressMinSize` bytes.
+     *
+     * @param {string} url - The request URL
+     * @param {Object} edpak - The edit package; `edpak.formdata` and `edpak.files` are read
+     * @param {Object} [opts]
+     * @param {string} [opts.method='POST'] - HTTP method
+     * @param {Object} [opts.headers={}] - Extra request headers (for example a CSRF token).
+     *   A `Content-Type` header is ignored (with a console warning) because the browser must
+     *   generate the multipart boundary itself.
+     * @param {string} [opts.dataField='data'] - Form field name for the JSON part. Must not
+     *   match the name of any file field.
+     * @param {boolean} [opts.withCredentials=false] - Send credentials on cross-origin requests
+     * @returns {Promise<Object|null>} Resolves with the parsed JSON response body (or null if
+     *   the body was empty) on a 2xx response.
+     */
+    submit(url, edpak, opts = {}) {
+        const options = {
+            method: 'POST',
+            headers: {},
+            dataField: 'data',
+            withCredentials: false,
+            ...opts
+        };
+
+        // The browser must generate the multipart boundary itself
+        const headers = {};
+        for (const [key, value] of Object.entries(options.headers || {})) {
+            if (key.toLowerCase() === 'content-type') {
+                console.warn('[recedit] submit(): ignoring a Content-Type header — the browser must set the multipart boundary itself.');
+                continue;
+            }
+            headers[key] = value;
+        }
+
+        const files = (edpak && edpak.files) || {};
+        const formData = new FormData();
+        formData.append(options.dataField, JSON.stringify((edpak && edpak.formdata) || {}));
+
+        let totalSize = 0;
+        for (const [fieldName, file] of Object.entries(files)) {
+            formData.append(fieldName, file);
+            totalSize += file.size || 0;
+        }
+
+        const minSizeOption = this.options.fileProgressMinSize;
+        let showProgress = false;
+        if (minSizeOption !== false && Object.keys(files).length > 0) {
+            const threshold = (minSizeOption === undefined || minSizeOption === null) ? 1048576 : minSizeOption;
+            showProgress = totalSize >= threshold;
+        }
+
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            this._activeUpload = xhr;
+
+            xhr.open(options.method, url, true);
+            xhr.withCredentials = !!options.withCredentials;
+
+            for (const [key, value] of Object.entries(headers)) {
+                xhr.setRequestHeader(key, value);
+            }
+
+            if (showProgress) {
+                this._showUploadProgress(0);
+            }
+
+            xhr.upload.onprogress = (event) => {
+                if (!showProgress || !event.lengthComputable) return;
+                // Use event.total, not the summed file sizes: the multipart body is slightly
+                // larger than the files themselves.
+                const pct = (event.loaded / event.total) * 100;
+                this._showUploadProgress(pct);
+            };
+
+            const cleanup = () => {
+                if (this._activeUpload === xhr) this._activeUpload = null;
+                this._hideUploadProgress();
+            };
+
+            xhr.onload = () => {
+                cleanup();
+                const status = xhr.status;
+
+                if (status >= 200 && status < 300) {
+                    let body = null;
+                    if (xhr.responseText) {
+                        try { body = JSON.parse(xhr.responseText); } catch (e) { body = null; }
+                    }
+                    resolve(body);
+                    return;
+                }
+
+                if (status === 413) {
+                    // Typically an HTML body from MAX_CONTENT_LENGTH or a reverse proxy, not JSON
+                    reject(new Error(this.options.messages.fileTooLarge || 'File is too large'));
+                    return;
+                }
+
+                let parsedBody = null;
+                if (xhr.responseText) {
+                    try { parsedBody = JSON.parse(xhr.responseText); } catch (e) { parsedBody = null; }
+                }
+
+                if (Array.isArray(parsedBody)) {
+                    this.displayFieldErrors(parsedBody);
+                    // Empty message follows the _handleSave() convention that the error was already handled
+                    reject(new Error(''));
+                    return;
+                }
+
+                const serverMessage = parsedBody && (parsedBody.message || parsedBody.status || parsedBody.error);
+                reject(new Error(serverMessage || `Save failed (HTTP ${status})`));
+            };
+
+            xhr.onerror = () => {
+                cleanup();
+                reject(new Error(this.options.messages.uploadFailed || 'Upload failed'));
+            };
+
+            xhr.onabort = () => {
+                cleanup();
+                const err = new Error('');
+                err.aborted = true;
+                reject(err);
+            };
+
+            xhr.send(formData);
+        });
+    }
+
+    /**
      * Displays inline field-level validation error messages under the relevant form fields.
      * Errors remain visible until the user clicks Save (which calls clearFieldErrors) or
      * clearFieldErrors() is called directly.
@@ -2950,6 +3713,9 @@ class RecEdit {
      * Destroys the dialog and cleans up jQuery UI widgets
      */
     destroy() {
+        this._abortUpload();
+        this._revokeAllFilePreviews();
+
         if (this.$dialog) {
             // Destroy tabs if present
             this.$dialog.find('.record-editor-tabs').each(function() {
@@ -3155,7 +3921,7 @@ class RecEditInlineForm extends RecEdit {
         // Focus first editable input and fire onAfterShow after widget animation settles
         setTimeout(async () => {
             if (!this.$form) return; // editor was destroyed before timer fired
-            const $firstInput = this.$form.find('input:not([type="hidden"]):not([readonly]):visible, textarea:not([readonly]):visible, select:visible').first();
+            const $firstInput = this.$form.find('input:not([type="hidden"]):not([type="file"]):not([readonly]):visible, textarea:not([readonly]):visible, select:visible').first();
             if ($firstInput.length) {
                 $firstInput.focus();
             }
@@ -3307,7 +4073,7 @@ class RecEditInlineForm extends RecEdit {
         setTimeout(async () => {
             if (!this.$form) return; // editor was destroyed before timer fired
             const $firstInput = this.$form
-                .find('input:not([type="hidden"]):not([readonly]):visible, textarea:not([readonly]):visible, select:visible')
+                .find('input:not([type="hidden"]):not([type="file"]):not([readonly]):visible, textarea:not([readonly]):visible, select:visible')
                 .first();
             if ($firstInput.length) {
                 $firstInput.focus();
@@ -3374,6 +4140,18 @@ class RecEditInlineForm extends RecEdit {
     }
 
     /**
+     * Returns `.recedit-button-bar` (the inline form's own injected button row) as the host
+     * for the form-level upload progress bar.
+     * @returns {jQuery|null}
+     * @private
+     */
+    _getProgressHost() {
+        if (!this.$saveBtn || !this.$saveBtn.length) return null;
+        const $host = this.$saveBtn.closest('.recedit-button-bar');
+        return $host.length ? $host : null;
+    }
+
+    /**
      * Post-save behaviour for inline forms.  Instead of closing the form, either
      * resets all field values to their defaults (when `clearFormOnSave` is true) or
      * leaves the form populated with the saved data (when `clearFormOnSave` is false).
@@ -3434,6 +4212,9 @@ class RecEditInlineForm extends RecEdit {
      * developer-supplied container markup.
      */
     destroy() {
+        this._abortUpload();
+        this._revokeAllFilePreviews();
+
         // Remove injected button bar
         this._$container.find('.recedit-button-bar').remove();
 

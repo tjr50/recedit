@@ -6,7 +6,8 @@ Supports multiple field types, tabbed form layouts, inline editing, custom dialo
 
 ## Features
 
-- **Multiple field types**: text, textarea, checkbox, radiogroup, select, date/datetime, password, autocomplete, spinner, slider, htmldiv
+- **Multiple field types**: text, textarea, checkbox, radiogroup, select, date/datetime, password, autocomplete, spinner, slider, htmldiv, file
+- **File uploads**: native `file` field with thumbnail, Remove button and drag-and-drop; `editor.submit()` sends the record and file in one multipart request with an optional progress bar
 - **Tabbed layouts**: group fields into tabs with the `tabs` option and automatic tab normalisation
 - **Vertical layout**: label above input (default)
 - **Horizontal layout**: label and input on the same row, with optional field grouping

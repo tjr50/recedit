@@ -44,7 +44,7 @@ From the **repo root**:
 npm test
 ```
 
-This runs all 56 tests (55 Playwright E2E tests + 1 QUnit runner test). The Express test server is started and stopped automatically.
+This runs all 97 tests (96 Playwright E2E tests + 1 QUnit runner test). The QUnit runner test covers 234 QUnit tests. The Express test server is started and stopped automatically.
 
 ---
 
@@ -62,6 +62,7 @@ To run a single spec file:
 ```powershell
 npx playwright test --config playwright.config.js tests/recedit-dialog.spec.js
 npx playwright test --config playwright.config.js tests/recedit-inline.spec.js
+npx playwright test --config playwright.config.js tests/recedit-file.spec.js
 npx playwright test --config playwright.config.js tests/recedit-qunit.spec.js
 ```
 
@@ -91,9 +92,11 @@ npm run serve
 | server.js | Express test server (auto-started by Playwright) |
 | recedit-dialog.spec.js | E2E tests for `RecEdit` dialog mode |
 | recedit-inline.spec.js | E2E tests for `RecEditInlineForm` and `RecEditCustomDialog` |
+| recedit-file.spec.js | E2E tests for the `file` field type (upload, remove, replace, progress bar, abort, drag and drop) in all three editor classes |
+| fixtures/ | Small PNG, PDF and wrong-type files used by `recedit-file.spec.js` |
 | recedit-qunit.spec.js | Playwright runner for the QUnit unit tests |
 | recedit-tests.html | QUnit HTML harness page |
-| recedit-tests.js | ~120 QUnit tests across 25 modules |
+| recedit-tests.js | 234 QUnit tests across 26 modules (module 26 covers the `file` field) |
 
 ---
 
@@ -101,5 +104,5 @@ npm run serve
 
 - Dialogs are appended to an off-screen `#test-sandbox` element so they do not affect the visible page during testing.
 - The `.ui-widget-overlay` CSS rule (`pointer-events: none`) prevents the jQuery UI modal backdrop from blocking the QUnit toolbar.
-- No backend application or database is required — the Express server serves only static assets and two HTML harness pages.
+- No backend application or database is required — the Express server serves static assets, the HTML harness pages (including `/file-harness`) and a small in-memory multipart endpoint (`/api/save-with-file`) for the file-upload tests.
 - The test suite is designed to run in any modern browser, but is currently configured to run headless Chromium via Playwright.
