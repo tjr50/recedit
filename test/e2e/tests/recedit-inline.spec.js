@@ -186,6 +186,58 @@ test.describe('RecEditInlineForm', () => {
         expect(counts.reset).toBe(1);
     });
 
+    test('Theme: checkbox gets the checkboxradio widget in the inline form', async ({ page }) => {
+        const containerId = await createContainer(page, ['active']);
+        const result = await page.evaluate(async ({ cid, defaults }) => {
+            const ed = new RecEditInlineForm({ ...defaults,
+                container: '#' + cid,
+                useJQueryUITheme: true,
+                fields: { active: { label: 'Active', type: 'checkbox', checkboxLabel: 'Active' } }
+            });
+            await ed.load({ record: { active: true } });
+            await new Promise(r => setTimeout(r, 100));
+            const $w = ed.fieldInputs.get('active');
+            const r = {
+                widget: !!$w.find('input[type="checkbox"]').data('ui-checkboxradio'),
+                labelActive: $w.find('label').hasClass('ui-state-active')
+            };
+            ed.destroy();
+            return r;
+        }, { cid: containerId, defaults: INLINE_DEFAULTS });
+        expect(result.widget).toBe(true);
+        expect(result.labelActive).toBe(true);
+    });
+
+    test('_setButtonsSaving: label changes to Saving... and the check icon survives', async ({ page }) => {
+        const containerId = await createContainer(page, ['name']);
+        const result = await page.evaluate(({ cid, defaults }) => {
+            const ed = new RecEditInlineForm({ ...defaults,
+                container: '#' + cid,
+                fields: { name: { label: 'Name', type: 'text' } }
+            });
+            ed._setButtonsSaving();
+            const during = {
+                text: ed.$saveBtn.text().trim(),
+                disabled: ed.$saveBtn.prop('disabled'),
+                icon: ed.$saveBtn.find('.ui-icon-check').length
+            };
+            ed._setButtonsNormal();
+            const after = {
+                text: ed.$saveBtn.text().trim(),
+                disabled: ed.$saveBtn.prop('disabled'),
+                icon: ed.$saveBtn.find('.ui-icon-check').length
+            };
+            ed.destroy();
+            return { during, after };
+        }, { cid: containerId, defaults: INLINE_DEFAULTS });
+        expect(result.during.text).toBe('Saving...');
+        expect(result.during.disabled).toBe(true);
+        expect(result.during.icon).toBe(1);
+        expect(result.after.text).toBe('Save');
+        expect(result.after.disabled).toBe(false);
+        expect(result.after.icon).toBe(1);
+    });
+
     test('close(): container element remains visible', async ({ page }) => {
         const containerId = await createContainer(page, ['name']);
         await page.evaluate(async ({ cid, defaults }) => {
@@ -449,5 +501,27 @@ test.describe('RecEditCustomDialog', () => {
             return warnings.some(w => /extra/i.test(w));
         }, { cid: containerId, defaults: DIALOG_DEFAULTS });
         expect(warned).toBe(true);
+    });
+
+    test('Theme: checkbox gets the checkboxradio widget in the custom dialog', async ({ page }) => {
+        const containerId = await createHiddenContainer(page, ['active']);
+        const result = await page.evaluate(async ({ cid, defaults }) => {
+            const ed = new RecEditCustomDialog({ ...defaults,
+                container: '#' + cid,
+                useJQueryUITheme: true,
+                fields: { active: { label: 'Active', type: 'checkbox', checkboxLabel: 'Active' } }
+            });
+            await ed.open({ record: { active: true } });
+            await new Promise(r => setTimeout(r, 100));
+            const $w = ed.fieldInputs.get('active');
+            const r = {
+                widget: !!$w.find('input[type="checkbox"]').data('ui-checkboxradio'),
+                labelActive: $w.find('label').hasClass('ui-state-active')
+            };
+            ed.destroy();
+            return r;
+        }, { cid: containerId, defaults: DIALOG_DEFAULTS });
+        expect(result.widget).toBe(true);
+        expect(result.labelActive).toBe(true);
     });
 });

@@ -50,4 +50,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added new file field type support for file uploads in the record editor.
 - Added tests for the new file field type support in the record editor.
 
+## [0.1.3-preview] - 2026-11-17
+### Changes
+- Added a `sourceParams` option to `autocomplete` fields: extra query parameters (an object, or `function(request) → object`) appended to every URL `source` request.
+- Fixed checkbox and `checkboxradio` fields not getting the jQuery UI theme: both types are now themed with `ui.checkboxradio()` (replacing `ui.button()`), initialised deterministically once the label is in the DOM — including async `radiogroup` option sources, inline forms and custom dialogs.
+- Fixed form label/`id` binding for compound fields (checkbox, radiogroup, slider, file) and applied `aria-required` to the real controls inside a wrapper.
+- Fixed the Save button never showing "Saving...": the label is now updated through the jQuery UI button `label` option (or the trailing text node for inline buttons), preserving the check icon.
+- Fixed `readonly` / `readOnly` / `disabled` not being honoured by every field type (checkbox, radiogroup, select, date, time, spinner, slider); read-only values are still submitted.
+- Updated documentation (read-only behaviour, `sourceParams`, checkbox theming, label/id binding, CSS classes) and added QUnit/E2E coverage for the changes above; rebuilt `dist/recedit.min.js`.
+
+
 

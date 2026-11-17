@@ -24,7 +24,7 @@ Supports multiple field types, tabbed form layouts, inline editing, custom dialo
 | Dependency | Version | Notes |
 |---|---|---|
 | jQuery | ≥ 3.5 | Required |
-| jQuery UI | ≥ 1.13 | Required (dialog, widget, datepicker, spinner, slider, autocomplete, selectmenu) |
+| jQuery UI | ≥ 1.13 | Required (dialog, widget, tabs, datepicker, autocomplete, selectmenu, checkboxradio, spinner, slider, button) |
 | [jQuery Inputmask](https://github.com/RobinHerbots/Inputmask) | 5.x | Optional — for masked text fields |
 | [jquery-timepicker](https://timepicker.co/) | 1.x | Optional — for time/datetime fields |
 

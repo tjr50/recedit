@@ -31,6 +31,7 @@
  * 24.  RecEditInlineForm
  * 25.  RecEditCustomDialog
  * 26.  File Field (type: 'file') - rendering, state, validation, progress bar, submit(), abort, drag and drop
+ * 27.  Read-only fields (all field types, readonly / readOnly / disabled)
  */
 
 'use strict';
@@ -286,6 +287,74 @@ QUnit.module('3. Checkbox & RadioGroup Fields', function (hooks) {
         await wait(60);
         assert.equal(ed.getFieldValue('role'), null, 'radiogroup = null when nothing selected');
     });
+
+    // ---- jQuery UI checkboxradio theming (0.1.3) ---------------------------
+
+    QUnit.test('Theme: checkbox and checkboxradio both get the ui.checkboxradio widget', async function (assert) {
+        ed = makeEditor({ useJQueryUITheme: true, fields: {
+            a: { label: 'A', type: 'checkbox',      checkboxLabel: 'A' },
+            b: { label: 'B', type: 'checkboxradio', checkboxLabel: 'B' }
+        }});
+        await ed.open({ record: { a: true, b: false } });
+        await wait(50);
+        var $a = ed.fieldInputs.get('a').find('input[type="checkbox"]');
+        var $b = ed.fieldInputs.get('b').find('input[type="checkbox"]');
+        assert.ok($a.data('ui-checkboxradio'), 'checkbox themed with checkboxradio');
+        assert.ok($b.data('ui-checkboxradio'), 'checkboxradio themed with checkboxradio');
+        assert.ok($a.next('label').hasClass('ui-checkboxradio-label'), 'label carries checkboxradio classes');
+    });
+
+    QUnit.test('Theme: checked state adds ui-state-active and ui-icon-check; refresh syncs', async function (assert) {
+        ed = makeEditor({ useJQueryUITheme: true, fields: { a: { label: 'A', type: 'checkbox', checkboxLabel: 'A' } } });
+        await ed.open({ record: { a: true } });
+        await wait(50);
+        var $label = ed.fieldInputs.get('a').find('label');
+        assert.ok($label.hasClass('ui-state-active'), 'checked label is active');
+        assert.ok($label.find('.ui-checkboxradio-icon').hasClass('ui-icon-check'), 'check icon shown');
+        await ed.setFieldValue('a', false);
+        assert.notOk($label.hasClass('ui-state-active'), 'unchecked label is not active');
+        assert.ok($label.find('.ui-checkboxradio-icon').hasClass('ui-icon-blank'), 'blank icon shown');
+    });
+
+    QUnit.test('Theme: radiogroup radios (async function options) are themed and checked label active', async function (assert) {
+        ed = makeEditor({ useJQueryUITheme: true, fields: { role: {
+            label: 'Role', type: 'radiogroup',
+            options: function () {
+                return Promise.resolve([
+                    { Value: 'admin', DisplayText: 'Admin' },
+                    { Value: 'user',  DisplayText: 'User'  }
+                ]);
+            }
+        }}});
+        await ed.open({ record: { role: 'user' } });
+        await wait(120);
+        var $radios = ed.fieldInputs.get('role').find('input[type="radio"]');
+        assert.equal($radios.length, 2, 'two radios rendered');
+        assert.ok($radios.eq(0).data('ui-checkboxradio') && $radios.eq(1).data('ui-checkboxradio'), 'both radios themed');
+        await ed.setFieldValue('role', 'user');
+        assert.ok($radios.eq(1).next('label').hasClass('ui-state-active'), 'checked radio label is active');
+    });
+
+    QUnit.test('Theme: _initializeCheckboxRadios is idempotent and skips inputs without a label', async function (assert) {
+        ed = makeEditor({ useJQueryUITheme: true, fields: { a: { label: 'A', type: 'checkbox', checkboxLabel: 'A' } } });
+        await ed.open({ record: { a: false } });
+        await wait(50);
+        var $label = ed.fieldInputs.get('a').find('label');
+        var iconCount = $label.find('.ui-checkboxradio-icon').length;
+        ed._initializeCheckboxRadios();
+        assert.equal($label.find('.ui-checkboxradio-icon').length, iconCount, 'no duplicate widget markup');
+        var $orphan = $('<input>', { type: 'checkbox' }).appendTo(ed.$form);
+        ed._initializeCheckboxRadios();
+        assert.notOk($orphan.data('ui-checkboxradio'), 'input without a label skipped');
+        $orphan.remove();
+    });
+
+    QUnit.test('Theme: useJQueryUITheme:false leaves checkboxes unthemed', async function (assert) {
+        ed = checkboxEditor();
+        await ed.open({ record: { active: true } });
+        assert.notOk(ed.fieldInputs.get('active').find('input').data('ui-checkboxradio'), 'no checkboxradio widget');
+        assert.equal(ed.fieldInputs.get('active').find('.ui-checkboxradio-icon').length, 0, 'no widget markup');
+    });
 });
 
 
@@ -490,6 +559,81 @@ QUnit.module('8. Password, htmldiv & Autocomplete', function (hooks) {
         ed = makeEditor({ fields: { city: { label: 'City', type: 'autocomplete', source: ['London', 'Paris'] } } });
         await ed.open({ record: { city: 'Paris' } });
         assert.equal(ed.getFieldValue('city'), 'Paris', 'autocomplete value = Paris');
+    });
+
+    // ---- sourceParams (0.1.3) ----------------------------------------------
+
+    QUnit.test('Autocomplete: sourceParams object is merged into a URL source request', async function (assert) {
+        var realGetJSON = $.getJSON;
+        var calls = [];
+        $.getJSON = function (url, data, cb) { calls.push({ url: url, data: data }); cb([]); };
+        try {
+            ed = makeEditor({ fields: { city: { type: 'autocomplete', source: '/api/cities', sourceParams: { country: 'AU' } } } });
+            await ed.open({ record: { city: '' } });
+            await wait(100);
+            ed.fieldInputs.get('city').val('Syd').autocomplete('search', 'Syd');
+            await wait(30);
+            assert.equal(calls.length, 1, 'one request');
+            assert.equal(calls[0].url, '/api/cities', 'URL used');
+            assert.equal(calls[0].data.term, 'Syd', 'term passed');
+            assert.equal(calls[0].data.country, 'AU', 'sourceParams merged');
+        } finally {
+            $.getJSON = realGetJSON;
+        }
+    });
+
+    QUnit.test('Autocomplete: sourceParams function receives the request and its result is merged', async function (assert) {
+        var realGetJSON = $.getJSON;
+        var calls = [];
+        var seen = [];
+        $.getJSON = function (url, data, cb) { calls.push(data); cb([]); };
+        try {
+            ed = makeEditor({ fields: { city: {
+                type: 'autocomplete',
+                source: '/api/cities',
+                sourceParams: function (request) { seen.push(request); return { q: request.term + '*' }; }
+            } } });
+            await ed.open({ record: { city: '' } });
+            await wait(100);
+            ed.fieldInputs.get('city').val('Mel').autocomplete('search', 'Mel');
+            await wait(30);
+            assert.equal(seen.length, 1, 'sourceParams called once');
+            assert.equal(seen[0].term, 'Mel', 'request object passed');
+            assert.equal(calls[0].term, 'Mel', 'term preserved');
+            assert.equal(calls[0].q, 'Mel*', 'function result merged');
+        } finally {
+            $.getJSON = realGetJSON;
+        }
+    });
+
+    QUnit.test('Autocomplete: sourceParams can override term', async function (assert) {
+        var realGetJSON = $.getJSON;
+        var data = null;
+        $.getJSON = function (url, d, cb) { data = d; cb([]); };
+        try {
+            ed = makeEditor({ fields: { city: { type: 'autocomplete', source: '/api/cities', sourceParams: { term: 'fixed' } } } });
+            await ed.open({ record: { city: '' } });
+            await wait(100);
+            ed.fieldInputs.get('city').val('Syd').autocomplete('search', 'Syd');
+            await wait(30);
+            assert.equal(data.term, 'fixed', 'sourceParams wins over request.term');
+        } finally {
+            $.getJSON = realGetJSON;
+        }
+    });
+
+    QUnit.test('Autocomplete: sourceParams is ignored for array and function sources', async function (assert) {
+        var called = false;
+        ed = makeEditor({ fields: {
+            a: { type: 'autocomplete', source: ['London'], sourceParams: function () { called = true; return {}; } },
+            b: { type: 'autocomplete', source: function (req, res) { res(['Paris']); }, sourceParams: function () { called = true; return {}; } }
+        }});
+        await ed.open({ record: { a: '', b: '' } });
+        await wait(100);
+        ed.fieldInputs.get('a').val('Lon').autocomplete('search', 'Lon');
+        ed.fieldInputs.get('b').val('Par').autocomplete('search', 'Par');
+        await wait(30);
+        assert.notOk(called, 'sourceParams not evaluated');
     });
 });
 
@@ -938,6 +1082,68 @@ QUnit.module('15. Label, Required & omitLabel', function (hooks) {
         await ed.open({ record: { name: '' } });
         assert.equal(ed.$form.find('[data-field="name"] .field-label').text(), 'My Title', 'title used as label');
     });
+
+    // ---- Label/id binding for compound fields (0.1.3) ----------------------
+
+    QUnit.test('label: simple control keeps for="field-<name>"', async function (assert) {
+        ed = makeEditor({ fields: { name: { label: 'Name', type: 'text' } } });
+        await ed.open({ record: { name: '' } });
+        assert.equal(ed.$form.find('[data-field="name"] .field-label').attr('for'), 'field-name', 'for = field-name');
+        assert.ok(ed.fieldInputs.get('name').is('#field-name'), 'control carries field-name id');
+    });
+
+    QUnit.test('label: checkbox label targets check-<name> and clicking it toggles the box', async function (assert) {
+        ed = makeEditor({ fields: { active: { label: 'Active', type: 'checkbox', checkboxLabel: 'Active' } } });
+        await ed.open({ record: { active: false } });
+        var $label = ed.$form.find('[data-field="active"] .field-label');
+        var $wrapper = ed.fieldInputs.get('active');
+        assert.equal($label.attr('for'), 'check-active', 'for = check-active');
+        assert.equal($wrapper.attr('id'), 'field-active', 'wrapper keeps field-active id');
+        assert.strictEqual(document.getElementById('check-active'), $wrapper.find('input[type="checkbox"]')[0], 'for points at the checkbox');
+        $label[0].click();
+        assert.equal(ed.getFieldValue('active'), true, 'clicking the row label checks the box');
+    });
+
+    QUnit.test('label: slider and file labels target the generated field-<name>-input ids', async function (assert) {
+        ed = makeEditor({ fields: {
+            rating: { label: 'Rating', type: 'slider' },
+            logo:   { label: 'Logo',   type: 'file'   }
+        }});
+        await ed.open({ record: { rating: 1, logo: '' } });
+        await wait(60);
+        assert.equal(ed.$form.find('[data-field="rating"] .field-label').attr('for'), 'field-rating-input', 'slider label for');
+        assert.ok(ed.fieldInputs.get('rating').find('.slider-value').is('#field-rating-input'), 'slider value input got the id');
+        assert.equal(ed.$form.find('[data-field="logo"] .field-label').attr('for'), 'field-logo-input', 'file label for');
+        assert.ok(ed.fieldInputs.get('logo').find('input[type="file"]').is('#field-logo-input'), 'file input got the id');
+    });
+
+    QUnit.test('label: radiogroup uses role=group + aria-labelledby instead of for', async function (assert) {
+        ed = makeEditor({ fields: { role: {
+            label: 'Role', type: 'radiogroup',
+            options: [{ Value: 'a', DisplayText: 'A' }]
+        }}});
+        await ed.open({ record: { role: 'a' } });
+        await wait(60);
+        var $label = ed.$form.find('[data-field="role"] .field-label');
+        var $group = ed.fieldInputs.get('role');
+        assert.equal($label.attr('for'), undefined, 'no for attribute');
+        assert.equal($label.attr('id'), 'field-role-label', 'label gets field-role-label id');
+        assert.equal($group.attr('role'), 'group', 'role = group');
+        assert.equal($group.attr('aria-labelledby'), 'field-role-label', 'aria-labelledby points at the label');
+    });
+
+    QUnit.test('required: aria-required is applied to controls inside a compound wrapper', async function (assert) {
+        ed = makeEditor({ fields: {
+            active: { label: 'A', type: 'checkbox', checkboxLabel: 'A', required: true },
+            role:   { label: 'R', type: 'radiogroup', required: true,
+                      options: [{ Value: 'a', DisplayText: 'A' }] }
+        }});
+        await ed.open({ record: { active: false, role: 'a' } });
+        await wait(60);
+        assert.equal(ed.fieldInputs.get('active').attr('aria-required'), 'true', 'checkbox wrapper marked');
+        assert.equal(ed.fieldInputs.get('active').find('input[type="checkbox"]').attr('aria-required'), 'true', 'checkbox marked');
+        assert.equal(ed.fieldInputs.get('role').find('input[type="radio"]').attr('aria-required'), 'true', 'radio marked');
+    });
 });
 
 
@@ -1154,6 +1360,35 @@ QUnit.module('20. Custom Buttons', function (hooks) {
         await ed.open({ record: { name: 'Alice' } });
         ed.$dialog.closest('.ui-dialog').find('.ui-dialog-buttonpane button:contains("Extra Action")').trigger('click');
         assert.ok(clicked, 'custom button click handler called');
+    });
+
+    // ---- "Saving..." button label (0.1.3) ----------------------------------
+
+    QUnit.test('_setButtonsSaving: label becomes Saving... and the check icon survives', async function (assert) {
+        ed = makeEditor({ fields: { name: { label: 'Name', type: 'text' } } });
+        await ed.open({ record: { name: 'Alice' } });
+        ed._setButtonsSaving();
+        var $save = ed.$saveBtn;
+        assert.ok($save.length, 'Save button found');
+        assert.equal($save.text().trim(), 'Saving...', 'label = Saving...');
+        assert.ok($save.prop('disabled'), 'Save disabled');
+        assert.ok(ed.$cancelBtn.prop('disabled'), 'Cancel disabled');
+        assert.equal($save.find('.ui-icon-check').length, 1, 'check icon preserved');
+
+        ed._setButtonsNormal();
+        assert.equal($save.text().trim(), 'Save', 'label restored');
+        assert.notOk($save.prop('disabled'), 'Save re-enabled');
+        assert.notOk(ed.$cancelBtn.prop('disabled'), 'Cancel re-enabled');
+        assert.equal($save.find('.ui-icon-check').length, 1, 'check icon still present');
+    });
+
+    QUnit.test('_setButtonsSaving: restores a custom saveButton text', async function (assert) {
+        ed = makeEditor({ fields: { name: { label: 'Name', type: 'text' } }, saveButton: { text: 'Apply' } });
+        await ed.open({ record: { name: '' } });
+        ed._setButtonsSaving();
+        assert.equal(ed.$saveBtn.text().trim(), 'Saving...', 'saving label');
+        ed._setButtonsNormal();
+        assert.equal(ed.$saveBtn.text().trim(), 'Apply', 'custom label restored');
     });
 });
 
@@ -1455,6 +1690,38 @@ QUnit.module('24. RecEditInlineForm', function (hooks) {
         await ed.load({ record: { name: 'Bob'   } });
         assert.equal(callCount, 1, 'onInit called exactly once across two load() calls');
     });
+
+    // ---- jQuery UI checkboxradio theming (0.1.3) ---------------------------
+
+    QUnit.test('Theme: checkbox gets the checkboxradio widget in the inline form', async function (assert) {
+        ed = makeInline(
+            { active: { label: 'Active', type: 'checkbox', checkboxLabel: 'Active' } },
+            { useJQueryUITheme: true }
+        );
+        await ed.load({ record: { active: true } });
+        await wait(50);
+        var $w = ed.fieldInputs.get('active');
+        assert.ok($w.find('input[type="checkbox"]').data('ui-checkboxradio'), 'checkbox themed');
+        assert.ok($w.find('label').hasClass('ui-state-active'), 'checked label active');
+    });
+
+    // ---- "Saving..." button label (0.1.3) ----------------------------------
+
+    QUnit.test('_setButtonsSaving: label changes to Saving... and the check icon survives', function (assert) {
+        ed = makeInline({ name: { label: 'Name', type: 'text' } });
+        var $save = ed.$saveBtn;
+        assert.equal($save.text().trim(), 'Save', 'initial label = Save');
+
+        ed._setButtonsSaving();
+        assert.equal($save.text().trim(), 'Saving...', 'label = Saving...');
+        assert.ok($save.prop('disabled'), 'Save disabled');
+        assert.equal($save.find('.ui-icon-check').length, 1, 'check icon preserved');
+
+        ed._setButtonsNormal();
+        assert.equal($save.text().trim(), 'Save', 'label restored');
+        assert.notOk($save.prop('disabled'), 'Save re-enabled');
+        assert.equal($save.find('.ui-icon-check').length, 1, 'check icon still present');
+    });
 });
 
 
@@ -1581,6 +1848,20 @@ QUnit.module('25. RecEditCustomDialog', function (hooks) {
         );
         await ed.open({ record: { name: 'Alice' } });
         assert.strictEqual(received, ed, 'onInit received the editor instance');
+    });
+
+    // ---- jQuery UI checkboxradio theming (0.1.3) ---------------------------
+
+    QUnit.test('Theme: checkbox gets the checkboxradio widget in the custom dialog', async function (assert) {
+        ed = makeCustomEditor(
+            { active: { label: 'Active', type: 'checkbox', checkboxLabel: 'Active' } },
+            { useJQueryUITheme: true }
+        );
+        await ed.open({ record: { active: true } });
+        await wait(50);
+        var $w = ed.fieldInputs.get('active');
+        assert.ok($w.find('input[type="checkbox"]').data('ui-checkboxradio'), 'checkbox themed');
+        assert.ok($w.find('label').hasClass('ui-state-active'), 'checked label active');
     });
 });
 
@@ -2759,5 +3040,138 @@ QUnit.module('26. File Field', function (hooks) {
         assert.notOk($w.hasClass('ui-state-highlight'), 'no ui-state-highlight');
         ed._showUploadProgress(10);
         assert.notOk(ed._$uploadProgress.find('progress').hasClass('ui-widget-header'), 'progress not themed');
+    });
+});
+
+
+// ============================================================
+// 27. Read-only fields
+// ============================================================
+QUnit.module('27. Read-only fields', function (hooks) {
+    var ed;
+    hooks.afterEach(function () { safeDestroy(ed); });
+
+    QUnit.test('text-like types: readonly attribute, tabindex -1, value still submitted', async function (assert) {
+        ed = makeEditor({ fields: {
+            name:  { label: 'N', type: 'text',         readonly: true },
+            notes: { label: 'T', type: 'textarea',     readonly: true },
+            pwd:   { label: 'P', type: 'password',     readonly: true },
+            city:  { label: 'C', type: 'autocomplete', source: ['London'], readonly: true }
+        }});
+        await ed.open({ record: { name: 'Alice', notes: 'hi', pwd: 's3cret', city: 'London' } });
+        ['name', 'notes', 'pwd', 'city'].forEach(function (f) {
+            var $i = ed.fieldInputs.get(f);
+            assert.ok($i.is('[readonly]'), f + ': readonly attribute');
+            assert.equal($i.attr('tabindex'), '-1', f + ': tabindex = -1');
+            assert.ok($i.hasClass('readonly-field'), f + ': readonly-field class');
+        });
+        assert.deepEqual(ed._getFormData(), { name: 'Alice', notes: 'hi', pwd: 's3cret', city: 'London' }, 'all values submitted');
+    });
+
+    QUnit.test('date: datepicker exists but can never open', async function (assert) {
+        ed = makeEditor({ fields: { due: { label: 'Due', type: 'date', readonly: true } } });
+        await ed.open({ record: { due: '2026-11-17' } });
+        var $d = ed.fieldInputs.get('due');
+        assert.ok($d.is('[readonly]'), 'readonly attribute');
+        assert.ok($d.data('datepicker'), 'datepicker initialised');
+        assert.strictEqual(typeof $d.datepicker('option', 'beforeShow'), 'function', 'beforeShow set');
+        assert.strictEqual($d.datepicker('option', 'beforeShow')(), false, 'beforeShow returns false');
+        $d.datepicker('show');
+        assert.notOk($d.datepicker('widget').is(':visible'), 'calendar did not open');
+        assert.equal(ed._getFormData().due, '2026-11-17', 'record value round-trips');
+    });
+
+    QUnit.test('time: readonly input and no timepicker is created', async function (assert) {
+        ed = makeEditor({ fields: { at: { label: 'At', type: 'time', readonly: true } } });
+        await ed.open({ record: { at: '09:30' } });
+        await wait(60);
+        var $t = ed.fieldInputs.get('at');
+        assert.ok($t.is('[readonly]'), 'readonly attribute');
+        assert.ok($t.hasClass('readonly-field'), 'readonly-field class');
+        assert.notOk($t.data('timepicker-initialized'), 'timepicker not initialised');
+        assert.equal(ed.getFieldValue('at'), '09:30', 'value preserved');
+    });
+
+    QUnit.test('checkbox / checkboxradio: control disabled, wrapper marked, value round-trips', async function (assert) {
+        ed = makeEditor({ useJQueryUITheme: true, fields: {
+            a: { label: 'A', type: 'checkbox',      checkboxLabel: 'A', readonly: true },
+            b: { label: 'B', type: 'checkboxradio', checkboxLabel: 'B', readOnly: true }
+        }});
+        await ed.open({ record: { a: true, b: false } });
+        await wait(50);
+        ['a', 'b'].forEach(function (f) {
+            var $w = ed.fieldInputs.get(f);
+            var $i = $w.find('input[type="checkbox"]');
+            assert.ok($w.hasClass('checkbox-container'), f + ': checkbox-container class');
+            assert.ok($w.hasClass('readonly-field'), f + ': wrapper readonly-field class');
+            assert.ok($i.prop('disabled'), f + ': control disabled');
+            assert.ok($w.find('label').hasClass('ui-state-disabled'), f + ': themed label disabled');
+        });
+        assert.deepEqual(ed._getFormData(), { a: true, b: false }, 'values still submitted');
+        assert.equal(ed.getFieldValue('a'), true, 'getFieldValue still returns state');
+    });
+
+    QUnit.test('radiogroup: all radios disabled and wrapper marked', async function (assert) {
+        ed = makeEditor({ useJQueryUITheme: true, fields: { role: {
+            label: 'Role', type: 'radiogroup', readonly: true,
+            options: [{ Value: 'admin', DisplayText: 'Admin' }, { Value: 'user', DisplayText: 'User' }]
+        }}});
+        await ed.open({ record: { role: 'user' } });
+        await wait(80);
+        var $w = ed.fieldInputs.get('role');
+        var $radios = $w.find('input[type="radio"]');
+        assert.ok($w.hasClass('readonly-field'), 'wrapper readonly-field class');
+        assert.equal($radios.length, 2, 'two radios');
+        assert.equal($radios.filter(':disabled').length, 2, 'all radios disabled');
+        assert.ok($radios.eq(1).next('label').hasClass('ui-state-disabled'), 'themed checked label disabled');
+        assert.equal(ed.getFieldValue('role'), 'user', 'value preserved');
+    });
+
+    QUnit.test('select: control disabled and selectmenu created disabled', async function (assert) {
+        ed = makeEditor({ useJQueryUITheme: true, fields: { s: { label: 'S', type: 'select', readonly: true, options: SELECT_OPTIONS } } });
+        await ed.open({ record: { s: 'active' } });
+        await wait(120);
+        var $s = ed.fieldInputs.get('s');
+        assert.ok($s.prop('disabled'), 'select disabled');
+        assert.ok($s.hasClass('readonly-field'), 'readonly-field class on the select');
+        assert.ok($s.data('ui-selectmenu'), 'selectmenu created');
+        assert.equal($s.selectmenu('option', 'disabled'), true, 'selectmenu disabled');
+        assert.equal(ed.getFieldValue('s'), 'active', 'value preserved');
+    });
+
+    QUnit.test('spinner: stays a plain read-only input with no spinner widget', async function (assert) {
+        ed = makeEditor({ fields: { n: { label: 'N', type: 'spinner', readonly: true } } });
+        await ed.open({ record: { n: 3 } });
+        await wait(260);
+        var $n = ed.fieldInputs.get('n');
+        assert.ok($n.is('[readonly]'), 'readonly attribute');
+        assert.ok($n.hasClass('readonly-field'), 'readonly-field class');
+        assert.notOk($n.data('ui-spinner'), 'no spinner widget');
+        assert.equal(ed.getFieldValue('n'), '3', 'value round-trips via .val()');
+        assert.equal(ed._getFormData().n, '3', 'formdata reads .val()');
+    });
+
+    QUnit.test('slider: value input readonly and widget disabled', async function (assert) {
+        ed = makeEditor({ fields: { rating: { label: 'R', type: 'slider', min: 0, max: 10, readonly: true } } });
+        await ed.open({ record: { rating: 5 } });
+        await wait(80);
+        var $w = ed.fieldInputs.get('rating');
+        var $value = $w.find('.slider-value');
+        var $slider = $w.find('.slider-widget');
+        assert.ok($w.hasClass('readonly-field'), 'wrapper readonly-field class');
+        assert.ok($value.prop('readonly'), 'value input readonly');
+        assert.ok($value.hasClass('readonly-field'), 'value input readonly-field class');
+        assert.ok($slider.data('ui-slider'), 'slider widget created');
+        assert.equal($slider.slider('option', 'disabled'), true, 'slider widget disabled');
+        assert.equal(ed.getFieldValue('rating'), '5', 'value preserved');
+    });
+
+    QUnit.test('disabled alias behaves like readonly', async function (assert) {
+        ed = makeEditor({ fields: { name: { label: 'N', type: 'text', disabled: true } } });
+        await ed.open({ record: { name: 'Alice' } });
+        var $i = ed.fieldInputs.get('name');
+        assert.ok($i.is('[readonly]'), 'readonly attribute');
+        assert.ok($i.hasClass('readonly-field'), 'readonly-field class');
+        assert.equal(ed.getFieldValue('name'), 'Alice', 'value preserved');
     });
 });

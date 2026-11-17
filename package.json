@@ -1,6 +1,6 @@
 {
   "name": "recedit",
-  "version": "0.1.0-preview",
+  "version": "0.1.3-preview",
   "description": "A jQuery UI-based record editor dialog component supporting multiple field types, tabbed layouts, inline editing, and custom dialogs.",
   "author": "Ozmx Internet Services <recedit@ozmx.com.au>",
   "main": "src/recedit.js",

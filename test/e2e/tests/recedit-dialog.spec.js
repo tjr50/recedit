@@ -518,4 +518,62 @@ test.describe('RecEdit — jQuery UI theme enabled', () => {
         }, JQ_DEFAULTS);
         expect(title).toBe('My Editor');
     });
+
+    test('Checkbox: theme uses checkboxradio and clicking the row label toggles it', async ({ page }) => {
+        const result = await page.evaluate(async (defaults) => {
+            const ed = new RecEdit({ ...defaults, fields: {
+                active: { label: 'Active', type: 'checkbox', checkboxLabel: 'Active' }
+            } });
+            await ed.open({ record: { active: false } });
+            await new Promise(r => setTimeout(r, 100));
+            const $w = ed.fieldInputs.get('active');
+            const $input = $w.find('input[type="checkbox"]');
+            const $label = $w.find('label');
+            const before = {
+                widget: !!$input.data('ui-checkboxradio'),
+                labelThemed: $label.hasClass('ui-checkboxradio-label'),
+                labelActive: $label.hasClass('ui-state-active')
+            };
+            $label[0].click();
+            await new Promise(r => setTimeout(r, 50));
+            const after = {
+                checked: $input.prop('checked'),
+                labelActive: $label.hasClass('ui-state-active'),
+                value: ed.getFieldValue('active')
+            };
+            ed.destroy();
+            return { before, after };
+        }, JQ_DEFAULTS);
+        expect(result.before.widget).toBe(true);
+        expect(result.before.labelThemed).toBe(true);
+        expect(result.before.labelActive).toBe(false);
+        expect(result.after.checked).toBe(true);
+        expect(result.after.labelActive).toBe(true);
+        expect(result.after.value).toBe(true);
+    });
+
+    test('Save button: label becomes Saving... during the save and is restored', async ({ page }) => {
+        await page.evaluate(async (defaults) => {
+            window.__resolveSave = null;
+            const ed = new RecEdit({ ...defaults,
+                fields: { name: { label: 'Name', type: 'text' } },
+                onSave: () => new Promise((resolve) => { window.__resolveSave = resolve; })
+            });
+            await ed.open({ record: { name: 'Alice' } });
+            window.__saveEditor = ed;
+            ed._handleSave();   // intentionally not awaited — onSave stays pending
+        }, JQ_DEFAULTS);
+
+        const saveBtn = page.locator('.ui-dialog-buttonpane button.ui-button-primary');
+        await expect(saveBtn).toContainText('Saving...');
+        await expect(saveBtn).toBeDisabled();
+        expect(await saveBtn.locator('.ui-icon-check').count()).toBe(1);
+
+        await page.evaluate(() => window.__resolveSave('saved'));
+        await page.waitForFunction(() => {
+            const b = document.querySelector('.ui-dialog-buttonpane button.ui-button-primary');
+            return b && b.textContent.trim() === 'Save' && !b.disabled;
+        });
+        await page.evaluate(() => { window.__saveEditor.destroy(); delete window.__saveEditor; delete window.__resolveSave; });
+    });
 });

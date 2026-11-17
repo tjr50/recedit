@@ -36,7 +36,7 @@
  * @license MIT
  * @author Ozmx Internet Services <recedit@ozmx.com.au>
  */
-console.log('RecEdit.js loaded - Version 0.1.1-preview');
+console.log('RecEdit.js loaded - Version 0.1.3-preview');
 
 // Compatibility shim: $.isFunction was removed in jQuery 4.0.
 // Restored here for legacy plugins (e.g. jquery-timepicker) that still call it.
@@ -487,6 +487,9 @@ class RecEdit {
         } else {
             this._buildFormWithoutTabs();
         }
+
+        // Fields are in the document now, so the checkboxradio widgets can be created
+        this._initializeCheckboxRadios();
     }
 
     /**
@@ -785,10 +788,10 @@ class RecEdit {
      * @private
      */
     _initializeDatepickers() {
-        this.$form.find('.datepicker').each(function() {
-            const $input = $(this);
+        this.$form.find('.datepicker').each((i, el) => {
+            const $input = $(el);
             const options = $input.data('datepicker-options');
-            
+
             if (options && !$input.data('datepicker')) {
                 // Remove undefined options before initializing
                 const cleanOptions = {};
@@ -797,6 +800,17 @@ class RecEdit {
                         cleanOptions[key] = value;
                     }
                 }
+
+                // A read-only date field keeps its datepicker — setDate()/getDate() and the
+                // display format conversion still go through the widget — but the calendar may
+                // never open: datepicker calls beforeShow on every attempt and aborts when it
+                // returns false. The readonly attribute alone is not enough, because the widget
+                // writes the picked date with .val().
+                const fieldConfig = this.options.fields[$input.attr('name')] || {};
+                if (this._isReadonlyField(fieldConfig)) {
+                    cleanOptions.beforeShow = () => false;
+                }
+
                 $input.datepicker(cleanOptions);
             }
         });
@@ -996,9 +1010,24 @@ class RecEdit {
         });
 
         const $input = this._createInput(fieldName, fieldConfig);
+
+        // _createInput() returns the control itself for simple field types, but a wrapper element
+        // for compound widgets (checkbox, radio group, slider, file). The `field-<name>` id is only
+        // a valid label target while it sits on a real control, so the label is re-bound for wrappers.
+        const isControl = $input.is('input, select, textarea');
         $input.attr('id', `field-${fieldName}`);
+        this._bindFieldLabel($label, $input, fieldName, fieldConfig);
+
         if (fieldConfig.required) {
+            // The marker goes on the element returned by _createInput() — the control itself for
+            // simple types, the wrapper for compound widgets (matching _applyDynamicFieldProps(),
+            // which also reads aria-required back from fieldInputs). For a wrapper the controls
+            // inside it are marked as well, so assistive tech reaches the real input/select.
             $input.attr('aria-required', 'true');
+            if (!isControl) {
+                $input.find('input:not([type="hidden"]), select, textarea')
+                    .attr('aria-required', 'true');
+            }
         }
         $inputContainer.append($input);
 
@@ -1079,6 +1108,51 @@ class RecEdit {
         return $group;
     }
 
+    /**
+     * Points a field label at the control it labels.
+     *
+     * `_createFieldGroup()` gives the element returned by `_createInput()` the id
+     * `field-<fieldName>` and the label is created with a matching `for`. That is correct for simple
+     * field types, where `_createInput()` returns the control itself, but compound widgets
+     * (checkbox/checkboxradio, radiogroup, slider, file) return a wrapper element — a label whose
+     * `for` points at a `<div>` activates nothing.
+     *
+     * For wrappers the label is therefore bound to the first control inside the wrapper (keeping
+     * ids the inner widget already assigned, e.g. `check-<fieldName>` for checkboxradio), and
+     * unbound when the wrapper holds no control yet (e.g. radiogroup options loaded from a URL).
+     * Radio groups are labelled through aria-labelledby instead, because a `for` on a group label
+     * would activate (i.e. select) its first option.
+     *
+     * @param {jQuery|null} $label - The field label element, or null when omitLabel is set
+     * @param {jQuery} $input - The element returned by _createInput()
+     * @param {string} fieldName - The field name
+     * @param {Object} fieldConfig - The field configuration
+     * @private
+     */
+    _bindFieldLabel($label, $input, fieldName, fieldConfig) {
+        if (!$label || $input.is('input, select, textarea')) return; // label's for already matches the control
+
+        const type = (fieldConfig.type || 'text').toLowerCase();
+
+        if (type === 'radiogroup') {
+            const labelId = `field-${fieldName}-label`;
+            $label.attr('id', labelId).removeAttr('for');
+            $input.attr({ role: 'group', 'aria-labelledby': labelId });
+            return;
+        }
+
+        const $control = $input.find('input:not([type="hidden"]), select, textarea').first();
+        if (!$control.length) {
+            // No control inside the wrapper (should not happen for checkbox/slider/file)
+            $label.removeAttr('for');
+            return;
+        }
+
+        if (!$control.attr('id')) {
+            $control.attr('id', `field-${fieldName}-input`);
+        }
+        $label.attr('for', $control.attr('id'));
+    }
 
     /**
      * Creates an input element based on the specified field configuration type.
@@ -1127,6 +1201,38 @@ class RecEdit {
             default:
                 return this._createTextInput(fieldName, fieldConfig);
         }
+    }
+
+    /**
+     * Returns true when a field is configured read-only (either spelling) or disabled.
+     *
+     * @param {Object} fieldConfig - The field configuration
+     * @returns {boolean}
+     * @private
+     */
+    _isReadonlyField(fieldConfig) {
+        return !!(fieldConfig && (fieldConfig.readonly || fieldConfig.readOnly || fieldConfig.disabled));
+    }
+
+    /**
+     * Marks a text-like control (`input`/`textarea`) as read-only: the `readonly` attribute
+     * blocks user input, `tabindex="-1"` keeps it out of the tab order, and the
+     * `readonly-field` class supplies the greyed-out styling (see recedit.css).
+     *
+     * Widget-backed types need more than this: `readonly` does nothing on checkable controls
+     * or `<select>` (they are disabled instead), and picker widgets that write the value with
+     * `.val()` (datepicker, timepicker, spinner) have to be kept from opening — see the
+     * individual builders.
+     *
+     * @param {jQuery} $el - The control to mark read-only
+     * @param {Object} fieldConfig - The field configuration
+     * @private
+     */
+    _applyReadonlyAttr($el, fieldConfig) {
+        if (!this._isReadonlyField(fieldConfig)) return;
+        $el.attr('readonly', true);
+        $el.attr('tabindex', '-1'); // Remove from tab order
+        $el.addClass('readonly-field');
     }
 
     /**
@@ -1190,11 +1296,7 @@ class RecEdit {
         }
 
         // Set read-only if specified
-        if (fieldConfig.readonly || fieldConfig.readOnly) {
-            $input.attr('readonly', true);
-            $input.attr('tabindex', '-1'); // Remove from tab order
-            $input.addClass('readonly-field');
-        }
+        this._applyReadonlyAttr($input, fieldConfig);
 
         return $input;
     }
@@ -1272,11 +1374,7 @@ class RecEdit {
         }
 
         // Set read-only if specified
-        if (fieldConfig.readonly || fieldConfig.readOnly) {
-            $textarea.attr('readonly', true);
-            $textarea.attr('tabindex', '-1'); // Remove from tab order
-            $textarea.addClass('readonly-field');
-        }
+        this._applyReadonlyAttr($textarea, fieldConfig);
 
         return $textarea;
     }
@@ -1287,15 +1385,24 @@ class RecEdit {
      * @param {string} fieldName - The name and base ID for the checkbox input element
      * @param {Object} fieldConfig - Configuration object for the checkbox
      * @param {string} fieldConfig.checkboxLabel - The label text to display for the checkbox
+     * @param {boolean} [fieldConfig.readonly] - If true, the checkbox is disabled (a checkbox cannot be read-only)
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the checkbox is disabled
      * @returns {jQuery} A jQuery object containing the checkbox container with input and label elements
      * 
      * @description
-     * Generates a checkbox with jQuery UI button styling if the useJQueryUITheme option is enabled
-     * and the element is visible. The checkbox is initialized asynchronously to allow for DOM insertion.
+     * The field group is only built here — the widget is created later by
+     * _initializeCheckboxRadios(), which runs once the label and input have been inserted
+     * into the document (jQuery UI resolves a checkboxradio label via element.labels() and
+     * throws when no label is found). Both the 'checkbox' and 'checkboxradio' field types
+     * get the same ui.checkboxradio widget: jQuery UI removed checkbox/radio support from
+     * ui.button in 1.13, so button() no longer themes a checkbox.
      */
     _createCheckbox(fieldName, fieldConfig) {
+        const isReadonly = this._isReadonlyField(fieldConfig);
+
         const $container = $('<div>', {
-            class: 'checkbox-container'
+            class: 'checkbox-container' + (isReadonly ? ' readonly-field' : '')
         });
 
         const $input = $('<input>', {
@@ -1305,41 +1412,49 @@ class RecEdit {
             class: 'form-checkbox'
         });
 
+        // A checkbox has no read-only state: the HTML spec ignores the `readonly` attribute on
+        // checkable controls (unlike text inputs/textarea), so a read-only checkbox must be
+        // disabled to stop the user toggling it. The `disabled` property is set here — before
+        // the widget exists — because ui.checkboxradio reads element.disabled in
+        // _getCreateOptions() and then applies both the disabled state and the
+        // ui-state-disabled label styling when _initializeCheckboxRadios() creates the widget.
+        // The value still round-trips: _getFormData() / getFieldValue() read the checkbox
+        // state from fieldInputs, not from a serialization that omits disabled controls.
+        if (isReadonly) {
+            $input.prop('disabled', true);
+        }
+
         const $label = $('<label>', {
             for: `check-${fieldName}`,
             text: fieldConfig.checkboxLabel || ''
         });
 
-        // Apply jQuery UI button styling to checkbox
         $container.append($input, $label);
-        
-        // Initialize as jQuery UI button/checkboxradio after DOM insertion
-        setTimeout(() => {
-            if (this.options.useJQueryUITheme && $input.is(':visible')) {
-                if ((fieldConfig.type || '').toLowerCase() === 'checkboxradio') {
-                    $input.checkboxradio();
-                } else {
-                    $input.button();
-                }
-            }
-        }, 0);
 
         return $container;
     }
 
     /**
-     * Creates a radio group container using jQuery UI checkboxradio on each radio button.
+     * Creates a radio group container. The jQuery UI checkboxradio widget is applied to each
+     * radio button by _initializeCheckboxRadios() once the radios are in the document.
      * Options are supplied via fieldConfig.options in the same formats as dropdown.
      *
      * @param {string} fieldName - The name attribute shared by all radio inputs
      * @param {Object} fieldConfig - Configuration object
      * @param {Object|Array|string|Function} fieldConfig.options - Option source (same formats as dropdown)
      * @param {string} [fieldConfig.inputClass] - Additional CSS classes for the container
+     * @param {boolean} [fieldConfig.readonly] - If true, the radios are disabled (radios cannot be read-only)
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the radios are disabled
      * @returns {jQuery} A jQuery div containing the radio group
      */
     _createRadioGroup(fieldName, fieldConfig) {
+        const isReadonly = this._isReadonlyField(fieldConfig);
+
         const $container = $('<div>', {
-            class: 'radiogroup-container' + (fieldConfig.inputClass ? ' ' + fieldConfig.inputClass : '')
+            class: 'radiogroup-container'
+                + (fieldConfig.inputClass ? ' ' + fieldConfig.inputClass : '')
+                + (isReadonly ? ' readonly-field' : '')
         });
 
         // Async: resolve options then build radios
@@ -1369,20 +1484,21 @@ class RecEdit {
                     value: opt.Value,
                     class: 'form-radio'
                 });
+                // A radio has no read-only state either, so read-only radios are disabled;
+                // ui.checkboxradio reads element.disabled when _initializeCheckboxRadios()
+                // creates the widget and then styles the label as disabled.
+                if (isReadonly) $radio.prop('disabled', true);
                 const $label = $('<label>', {
                     for: id,
                     text: opt.DisplayText || opt.Value
                 });
                 $container.append($radio, $label);
-
-                if (this.options.useJQueryUITheme) {
-                    setTimeout(() => {
-                        if ($radio.is(':visible')) {
-                            $radio.checkboxradio();
-                        }
-                    }, 0);
-                }
             });
+
+            // Async option sources (function / URL) append the radios after the form has been
+            // built, so the theme has to be (re-)applied here; the call is idempotent and is a
+            // no-op for radios that are not in the document yet (synchronous array options).
+            this._initializeCheckboxRadios();
         };
 
         buildRadios();
@@ -1400,6 +1516,9 @@ class RecEdit {
      * @param {string} [fieldConfig.inputWidth] - Alternative CSS width property
      * @param {Function} [fieldConfig.onChange] - Callback fired when the user changes the selection.
      *   Receives (event, ui) where ui.item has value, label, and index properties.
+     * @param {boolean} [fieldConfig.readonly] - If true, the select is disabled (selects cannot be read-only)
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the select is disabled
      * @returns {jQuery} A jQuery object representing the created select element with applied styles and options
      * 
      * @description
@@ -1414,13 +1533,23 @@ class RecEdit {
             baseClasses += ' full-width';
         }
 
+        const isReadonly = this._isReadonlyField(fieldConfig);
+
         const $select = $('<select>', {
             name: fieldName,
-            class: baseClasses
+            class: baseClasses + (isReadonly ? ' readonly-field' : '')
         });
 
         if (fieldConfig.inputClass) {
             $select.addClass(fieldConfig.inputClass);
+        }
+
+        // `<select>` has no read-only state — the readonly attribute is ignored on selects — so a
+        // read-only select is disabled. ui.selectmenu does not read element.disabled when it is
+        // created (it only syncs it in refresh()), so _initializeSelectMenus() passes the
+        // disabled option explicitly for a select that arrives here already disabled.
+        if (isReadonly) {
+            $select.prop('disabled', true);
         }
 
         // Apply CSS width to the raw <select> (effective for non-jQuery UI; also used by
@@ -1514,9 +1643,10 @@ class RecEdit {
             $select.append($option);
         });
 
-        // Reinitialize selectmenu
+        // Reinitialize selectmenu (carrying over a read-only/disabled select — selectmenu does
+        // not read element.disabled on creation, see _initializeSelectMenus)
         if (this.options.useJQueryUITheme && $select.is(':visible')) {
-            $select.selectmenu();
+            $select.selectmenu($select.prop('disabled') ? { disabled: true } : {});
             const fieldConfig = this.options.fields && this.options.fields[$select.attr('name')];
             const wCfg = fieldConfig && (fieldConfig.inputWidth || fieldConfig.width);
             if (wCfg) {
@@ -1552,6 +1682,9 @@ class RecEdit {
      * @param {string} fieldName - The name attribute for the input element
      * @param {Object} fieldConfig - Configuration object for the date field
      * @param {string} [fieldConfig.placeholder] - Placeholder text for the input
+     * @param {boolean} [fieldConfig.readonly] - If true, the input is read-only and the calendar never opens
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the input is read-only and the calendar never opens
      * @param {string} [fieldConfig.dateDisplayFormat] - Date display format string (e.g., 'dd-mm-yy')
      * @param {string} [fieldConfig.dateRecordFormat] - Date record format string (e.g., 'yyyy-mm-dd')
      * @param {boolean} [fieldConfig.changeMonth] - Whether to show month dropdown
@@ -1592,6 +1725,9 @@ class RecEdit {
             $input.css('width', fieldConfig.inputWidth);
         }
 
+        // Set read-only if specified (the calendar itself is blocked in _initializeDatepickers)
+        this._applyReadonlyAttr($input, fieldConfig);
+
         // Store datepicker options on the element for initialization after DOM insertion
         $input.data('datepicker-options', {
             dateFormat: fieldConfig.dateDisplayFormat || this.options.dateDisplayFormat,
@@ -1614,6 +1750,9 @@ class RecEdit {
      * @param {Object} fieldConfig - Configuration object for the time field
      * @param {string} [fieldConfig.timeFormat='HH:mm'] - Display/value format string
      * @param {string} [fieldConfig.placeholder] - Placeholder text for the input
+     * @param {boolean} [fieldConfig.readonly] - If true, the input is read-only and the timepicker is not created
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the input is read-only and the timepicker is not created
      * @param {string|Date} [fieldConfig.defaultTime] - Default time value
      * @param {string|Date} [fieldConfig.minTime] - Minimum allowed time
      * @param {string|Date} [fieldConfig.maxTime] - Maximum allowed time
@@ -1656,6 +1795,9 @@ class RecEdit {
             }
         }
 
+        // Set read-only if specified (the picker itself is skipped in _initializeTimepickers)
+        this._applyReadonlyAttr($input, fieldConfig);
+
         // Build options object; undefined entries are stripped in _initializeTimepickers
         const tpOptions = {
             timeFormat,
@@ -1692,11 +1834,16 @@ class RecEdit {
         const dlgZIndex = ($dlg && $dlg.length) ? (parseInt($dlg.css('z-index'), 10) || 100) : 100;
         const dropdownZIndex = dlgZIndex + 10;
 
-        this.$form.find('.timepicker').each(function() {
-            const $input = $(this);
+        this.$form.find('.timepicker').each((i, el) => {
+            const $input = $(el);
             const options = $input.data('timepicker-options');
+            const fieldConfig = this.options.fields[$input.attr('name')] || {};
 
-            if (options && !$input.data('timepicker-initialized')) {
+            // A read-only time field never gets the timepicker: the plugin opens on focus and
+            // writes the selection into the input with .val(), so readonly alone would not stop
+            // the user changing the value. The value still goes in/out through .val().
+            if (options && !$input.data('timepicker-initialized')
+                && !this._isReadonlyField(fieldConfig)) {
                 // Remove undefined options before initializing
                 const cleanOptions = {};
                 for (const [key, value] of Object.entries(options)) {
@@ -1713,6 +1860,38 @@ class RecEdit {
     }
 
     /**
+     * Initializes the jQuery UI checkboxradio widget on every checkbox and radio input in the form.
+     *
+     * jQuery UI removed checkbox/radio support from the button widget in 1.13, so checkboxradio is
+     * the only widget that themes a checkbox or radio: it hides the native input and styles the
+     * associated <label for="..."> (ui-button/ui-widget/ui-state-default, ui-state-active when
+     * checked, plus the ui-icon-check/ui-icon-blank icon).
+     *
+     * Must run after the inputs and their labels have been inserted into the document —
+     * checkboxradio resolves its label through element.labels() and errors out when none is found.
+     * Visibility is deliberately NOT checked: checkboxradio works on hidden elements (the dialog
+     * before it is opened, fields in an inactive tab panel, hidden fields), whereas a :visible test
+     * makes initialisation depend on the async timing of open() and silently skips the field.
+     *
+     * Safe to call repeatedly; already-initialised inputs are skipped.
+     *
+     * @private
+     */
+    _initializeCheckboxRadios() {
+        if (!this.options.useJQueryUITheme || !this.$form) return;
+        if (typeof $.fn.checkboxradio !== 'function') return; // checkboxradio widget not loaded
+
+        this.$form.find('input[type="checkbox"], input[type="radio"]').each(function() {
+            const $input = $(this);
+            if ($input.data('ui-checkboxradio')) return; // already initialised
+            // Skip inputs whose <label> is not in the document yet (e.g. a field group that has
+            // not been appended to the form); checkboxradio would throw "No label found".
+            if (typeof $input.labels === 'function' && !$input.labels().length) return;
+            $input.checkboxradio();
+        });
+    }
+
+    /**
      * Initializes jQuery UI selectmenu widgets on all select fields after the dialog is visible.
      * Called from _showDialog() so that selectmenu always initializes against a visible element,
      * giving correct auto-width behaviour and avoiding the race condition where a setTimeout fires
@@ -1724,7 +1903,9 @@ class RecEdit {
         this.$form.find('select.form-control').each((i, el) => {
             const $select = $(el);
             if ($select.data('ui-selectmenu')) return; // already initialized
-            $select.selectmenu();
+            // selectmenu only learns about a disabled <select> in refresh(), not on creation,
+            // so the option has to be passed in for a read-only/disabled field
+            $select.selectmenu($select.prop('disabled') ? { disabled: true } : {});
             const fieldName = $select.attr('name');
             const fieldConfig = (this.options.fields && this.options.fields[fieldName]) || {};
             const wCfg = fieldConfig.inputWidth || fieldConfig.width;
@@ -1745,6 +1926,9 @@ class RecEdit {
      * @param {Object} fieldConfig - Configuration object for the password field
      * @param {string} [fieldConfig.placeholder] - Placeholder text for the input
      * @param {string} [fieldConfig.inputClass] - Additional CSS classes to apply
+     * @param {boolean} [fieldConfig.readonly] - If true, the input is read-only
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the input is read-only
      * @returns {jQuery} A jQuery object representing the password input element
      * @private
      */
@@ -1759,6 +1943,9 @@ class RecEdit {
         if (fieldConfig.inputClass) {
             $input.addClass(fieldConfig.inputClass);
         }
+
+        // Set read-only if specified
+        this._applyReadonlyAttr($input, fieldConfig);
 
         return $input;
     }
@@ -1817,6 +2004,9 @@ class RecEdit {
      * @param {string} [fieldConfig.scrollHeight='200px'] - CSS max-height of the suggestion list when maxItems is set
      * @param {Function} [fieldConfig.onSelect] - Callback fired when the user selects a suggestion. Receives (event, ui) where ui.item is the selected item.
      * @param {string} [fieldConfig.inputClass] - Additional CSS classes to apply
+     * @param {boolean} [fieldConfig.readonly] - If true, the input is read-only and the suggestion menu never opens
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the input is read-only and the widget is disabled
      * @returns {jQuery} A jQuery object representing the autocomplete input element
      * @private
      */
@@ -1849,7 +2039,9 @@ class RecEdit {
             $input.css('width', fieldConfig.inputWidth);
         }
 
-
+        // Set read-only if specified. ui.autocomplete bails out of its keydown handler when the
+        // element is readOnly, so no search is started and the suggestion menu never opens.
+        this._applyReadonlyAttr($input, fieldConfig);
 
         // Initialize autocomplete
         setTimeout(() => {
@@ -1859,7 +2051,12 @@ class RecEdit {
             };
 
             if (typeof fieldConfig.source === 'string') {
-                autocompleteOptions.source = fieldConfig.source;
+                const url = fieldConfig.source;
+                const params = fieldConfig.sourceParams;
+                autocompleteOptions.source = (request, response) => {
+                    const extra = typeof params === 'function' ? params(request) : (params || {});
+                    $.getJSON(url, { ...request, ...extra }, response);
+                };
             } else if (Array.isArray(fieldConfig.source)) {
                 autocompleteOptions.source = fieldConfig.source;
             } else if (typeof fieldConfig.source === 'function') {
@@ -1912,6 +2109,9 @@ class RecEdit {
      * @param {number} [fieldConfig.max] - Maximum allowed value
      * @param {number} [fieldConfig.step] - Increment/decrement step value
      * @param {string} [fieldConfig.inputClass] - Additional CSS classes to apply
+     * @param {boolean} [fieldConfig.readonly] - If true, the field stays a plain read-only input (no spinner widget)
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - If true, the field stays a plain read-only input (no spinner widget)
      * @returns {jQuery} A jQuery object representing the spinner input element
      * @private
      */
@@ -1926,8 +2126,18 @@ class RecEdit {
             $input.addClass(fieldConfig.inputClass);
         }
 
+        // Set read-only if specified
+        this._applyReadonlyAttr($input, fieldConfig);
+
         // Initialize spinner
         setTimeout(() => {
+            // A read-only spinner stays a plain read-only number field: jQuery UI's spinner does
+            // not honour `readonly` (its spin buttons and mouse wheel would still write to the
+            // value) and its `disabled` option neither disables the element nor blocks spinning,
+            // so the widget is skipped entirely. The value still round-trips through the .val()
+            // fallbacks in _setInputValue()/_getFormData()/getFieldValue().
+            if (this._isReadonlyField(fieldConfig)) return;
+
             const spinnerOptions = {};
 
             if (fieldConfig.min !== undefined) {
@@ -1958,13 +2168,17 @@ class RecEdit {
      * @param {number} [fieldConfig.max=100] - Maximum slider value
      * @param {number} [fieldConfig.step=1] - Increment step for slider movement
      * @param {number} [fieldConfig.defaultValue=0] - Initial slider value
-     * @param {boolean} [fieldConfig.readonly=false] - Whether the numeric input is read-only
+     * @param {boolean} [fieldConfig.readonly=false] - Whether the slider and its numeric input are read-only
+     * @param {boolean} [fieldConfig.readOnly] - Alternative property for read-only state
+     * @param {boolean} [fieldConfig.disabled] - Alternative property for read-only state
      * @returns {jQuery} A jQuery object representing the slider container with slider widget and value input
      * @private
      */
     _createSlider(fieldName, fieldConfig) {
+        const isReadonly = this._isReadonlyField(fieldConfig);
+
         const $container = $('<div>', {
-            class: 'slider-container'
+            class: 'slider-container' + (isReadonly ? ' readonly-field' : '')
         });
 
         const $slider = $('<div>', {
@@ -1974,8 +2188,8 @@ class RecEdit {
         const $valueDisplay = $('<input>', {
             type: 'number',
             name: fieldName,
-            class: 'slider-value ui-widget-content ui-corner-all',
-            readonly: fieldConfig.readonly || false
+            class: 'slider-value ui-widget-content ui-corner-all' + (isReadonly ? ' readonly-field' : ''),
+            readonly: isReadonly
         });
 
         $container.append($slider, $valueDisplay);
@@ -1987,6 +2201,9 @@ class RecEdit {
                 max: fieldConfig.max || 100,
                 step: fieldConfig.step || 1,
                 value: fieldConfig.defaultValue || 0,
+                // slider honours the disabled option: _mouseCapture and the handle keydown
+                // handler both bail out, so a read-only slider can only be moved from code
+                disabled: isReadonly,
                 slide: (event, ui) => {
                     $valueDisplay.val(ui.value);
                 },
@@ -2029,7 +2246,7 @@ class RecEdit {
      * @private
      */
     _createFileInput(fieldName, fieldConfig) {
-        const isReadonly = !!(fieldConfig.readonly || fieldConfig.readOnly || fieldConfig.disabled);
+        const isReadonly = this._isReadonlyField(fieldConfig);
         const dropZoneEnabled = fieldConfig.dropZone !== false && !isReadonly;
 
         const $wrapper = $('<div>', { class: 'file-field' });
@@ -2514,8 +2731,6 @@ class RecEdit {
                     $checkbox.prop('checked', Boolean(value));
                     if ($checkbox.data('ui-checkboxradio')) {
                         $checkbox.checkboxradio('refresh');
-                    } else if ($checkbox.data('ui-button')) {
-                        $checkbox.button('refresh');
                     }
                 }
                 break;
@@ -3300,8 +3515,40 @@ class RecEdit {
         const cancelLabel = this._cancelBtnLabel || this.options.messages.cancel;
         this.$saveBtn   = $dialogWidget.find('button:contains("' + saveLabel + '")');
         this.$cancelBtn = $dialogWidget.find('button:contains("' + cancelLabel + '")');
-        this.$saveBtn.prop('disabled', true).find('.ui-button-text').text(this.options.messages.saving);
+        this._setButtonLabel(this.$saveBtn, this.options.messages.saving);
+        this.$saveBtn.prop('disabled', true);
         this.$cancelBtn.prop('disabled', true);
+    }
+
+    /**
+     * Replaces the visible label text of a button, keeping its icon intact.
+     *
+     * jQuery UI 1.12 replaced the generated `.ui-button-text` / `.ui-button-icon-primary` spans with
+     * the button widget's `label` option: the label is now the button's own content and the widget
+     * appends/removes the icon spans itself. Writing to `.ui-button-text` (the pre-1.12 markup) is a
+     * silent no-op on modern versions, which is why the Save button never showed «Saving...».
+     *
+     * Plain buttons (e.g. the inline form's manually built buttons, and pre-1.12 markup) are handled
+     * by replacing the trailing text node only, so icon spans are preserved.
+     *
+     * @param {jQuery} $button - The button element(s)
+     * @param {string} text - The new label text
+     * @private
+     */
+    _setButtonLabel($button, text) {
+        if (!$button || !$button.length) return;
+
+        if ($button.data('ui-button')) {
+            $button.button('option', 'label', text);
+            return;
+        }
+
+        const last = $button.contents().last()[0];
+        if (last && last.nodeType === Node.TEXT_NODE) {
+            last.nodeValue = text;
+        } else {
+            $button.append(document.createTextNode(text));
+        }
     }
 
     /**
@@ -3319,7 +3566,8 @@ class RecEdit {
     _setButtonsNormal() {
         if (this.$saveBtn) {
             const saveLabel = this._saveBtnLabel || this.options.messages.save;
-            this.$saveBtn.prop('disabled', false).find('.ui-button-text').text(saveLabel);
+            this.$saveBtn.prop('disabled', false);
+            this._setButtonLabel(this.$saveBtn, saveLabel);
         }
         if (this.$cancelBtn) {
             this.$cancelBtn.prop('disabled', false);
@@ -4055,6 +4303,7 @@ class RecEditInlineForm extends RecEdit {
         this._initializeAutoComplete();
         this._initializeDatepickers();
         this._initializeTimepickers();
+        this._initializeCheckboxRadios();
     }
 
     // -------------------------------------------------------------------------
@@ -4119,7 +4368,8 @@ class RecEditInlineForm extends RecEdit {
      */
     _setButtonsSaving() {
         if (this.$saveBtn) {
-            this.$saveBtn.prop('disabled', true).text(this.options.messages.saving);
+            this.$saveBtn.prop('disabled', true);
+            this._setButtonLabel(this.$saveBtn, this.options.messages.saving);
         }
         if (this.$cancelBtn) {
             this.$cancelBtn.prop('disabled', true);
@@ -4132,7 +4382,8 @@ class RecEditInlineForm extends RecEdit {
      */
     _setButtonsNormal() {
         if (this.$saveBtn) {
-            this.$saveBtn.prop('disabled', false).text(this._saveBtnLabel || this.options.messages.save);
+            this.$saveBtn.prop('disabled', false);
+            this._setButtonLabel(this.$saveBtn, this._saveBtnLabel || this.options.messages.save);
         }
         if (this.$cancelBtn) {
             this.$cancelBtn.prop('disabled', false);
@@ -4364,6 +4615,7 @@ class RecEditCustomDialog extends RecEdit {
         super._initializeAutoComplete();
         this._initializeDatepickers();
         this._initializeTimepickers();
+        this._initializeCheckboxRadios();
     }
 
     // -------------------------------------------------------------------------

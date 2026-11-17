@@ -44,7 +44,7 @@ From the **repo root**:
 npm test
 ```
 
-This runs all 97 tests (96 Playwright E2E tests + 1 QUnit runner test). The QUnit runner test covers 234 QUnit tests. The Express test server is started and stopped automatically.
+This runs all 102 tests (101 Playwright E2E tests + 1 QUnit runner test). The QUnit runner test covers 263 QUnit tests. The Express test server is started and stopped automatically.
 
 ---
 
@@ -96,7 +96,7 @@ npm run serve
 | fixtures/ | Small PNG, PDF and wrong-type files used by `recedit-file.spec.js` |
 | recedit-qunit.spec.js | Playwright runner for the QUnit unit tests |
 | recedit-tests.html | QUnit HTML harness page |
-| recedit-tests.js | 234 QUnit tests across 26 modules (module 26 covers the `file` field) |
+| recedit-tests.js | 263 QUnit tests across 27 modules (module 26 covers the `file` field; module 27 covers read-only handling for every field type) |
 
 ---
 

@@ -118,6 +118,21 @@ textarea.form-control {
     box-shadow: none;
 }
 
+/* Read-only compound fields: checkbox / radio have no read-only state, so the control inside the
+   wrapper is disabled. jQuery UI dims its themed label via .ui-state-disabled; these rules give
+   the same cue when the theme is off (useJQueryUITheme: false) and stop the pointer cue. */
+.checkbox-container.readonly-field,
+.radiogroup-container.readonly-field,
+.slider-container.readonly-field {
+    opacity: 0.8;
+}
+
+.checkbox-container.readonly-field label,
+.radiogroup-container.readonly-field label,
+.slider-container.readonly-field input {
+    cursor: not-allowed;
+}
+
 /* Field row grouping (for horizontal layout) */
 .field-row {
     display: flex;

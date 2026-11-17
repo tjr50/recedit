@@ -101,7 +101,7 @@ messages: {
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `useJQueryUITheme` | Boolean | `true` | Apply jQuery UI theme styling |
+| `useJQueryUITheme` | Boolean | `true` | Apply jQuery UI theme styling. When `true`, compound fields are themed with their jQuery UI widgets (`checkboxradio` for checkboxes and radios, `selectmenu` for selects, plus `slider`, `spinner` and the pickers) and field labels get `ui-state-default`. Set to `false` for plain, unstyled controls. |
 | `dialogWidth` | Number/String | `600` | Dialog width in pixels |
 | `dialogHeight` | String | `'auto'` | Dialog height |
 | `dialogTitle` | String | `null` | Custom dialog title (overrides `messages.editRecord`) |
@@ -281,7 +281,8 @@ Each field in the `fields` object can have the following properties:
 | `type` | String | Field type (see [Field Types](#field-types)) |
 | `placeholder` | String | Placeholder (hint) text |
 | `inputClass` | String | Additional CSS classes for the input |
-| `readonly` / `readOnly` | Boolean | Make field read-only |
+| `readonly` / `readOnly` | Boolean | Make field read-only (see [Read-only fields](#read-only-fields)) |
+| `disabled` | Boolean | Treated exactly like `readonly` (kept for backward compatibility) |
 | `edit` | Boolean | If `false`, field is not shown in form |
 | `key` | Boolean | If `true`, field is a key field (hidden from editing) |
 | `transient` | Boolean | If `true`, field is shown in the form but omitted from the save data (`edpak.formdata`). Default: `false`. |
@@ -289,7 +290,30 @@ Each field in the `fields` object can have the following properties:
 | `labelWidth` | String | Label width in horizontal layout, e.g. `'150px'` (overrides global setting)|
 | `tab` | String | Tab ID or title where field should appear |
 | `fieldGroup` | String | Group name - fields with same value appear on one line (horizontal layout only) |
-| `required` | Boolean | If `true`, marks the field as required with a red asterisk (`*`) after the label and sets `aria-required` on the input |
+| `required` | Boolean | If `true`, marks the field as required with a red asterisk (`*`) after the label and sets `aria-required` on the control (and on the controls inside a compound wrapper such as checkbox, radiogroup, slider or file) |
+
+
+**Generated element IDs and label binding:** each field group gets an `id` of `field-<name>` on the element returned by the field builder — the control itself for simple types, or the wrapper `div` for compound types (`checkbox`/`checkboxradio`, `radiogroup`, `slider`, `file`). The field label's `for` points at the control it actually labels: `check-<name>` for a checkbox (so clicking the row label toggles the box), the slider/file control (which gets `field-<name>-input` if it has no id), or — for a `radiogroup` — no `for` at all, because a `for` on a group label would select the first option; instead the label gets `id="field-<name>-label"` and the container gets `role="group"` + `aria-labelledby`. With `omitLabel: true` no label element is created.
+
+
+### Read-only fields
+
+`readonly` (or its alias `readOnly`, or `disabled`) makes a field non-editable. It is honoured by
+every field type, but the mechanism differs because HTML only defines `readonly` for text-like
+controls:
+
+| Field type | How read-only is applied |
+|------------|--------------------------|
+| `text`, `textarea`, `password`, `autocomplete` | `readonly` attribute + removed from the tab order + `.readonly-field` class. Autocomplete never starts a search on a read-only input, so the suggestion menu cannot open. |
+| `date`, `time` | As above, including `tabindex="-1"` to keep the field out of the tab order. The picker never opens (datepicker's `beforeShow` returns `false`; the timepicker is not created). Value formatting and `setFieldValue()` still work. |
+| `checkbox`, `checkboxradio`, `radiogroup`, `select`/`dropdown` | The control is **disabled** (a checkbox, radio or select has no read-only state) and the wrapper (or the `<select>` itself) gets `.readonly-field`. With jQuery UI theming the widget is created disabled (checkboxradio/selectmenu), so it cannot be toggled or opened. |
+| `spinner` | Stays a plain read-only input — no spinner widget is created, so the step buttons cannot change the value. |
+| `slider` | The numeric input is read-only (and gets `.readonly-field`) and the slider widget is created disabled, so the handle can only be moved from code. |
+| `file` | No drop zone, no file chooser and the Remove button is hidden; the current filename is still shown and submitted. |
+| `hidden`, `htmldiv` | Have no control, so the setting has no effect (the value/content is only changed from code). |
+
+Read-only values are still submitted: `_getFormData()`, `getFieldValue()` and `validateForm` read
+the state kept in `fieldInputs`, not a DOM serialization that would skip disabled controls.
 
 
 ### Text Input Properties
@@ -327,22 +351,16 @@ Each field in the `fields` object can have the following properties:
 
 - `getFieldValue()` always returns a Boolean (`true` / `false`).
 - When populating the form, the record value is coerced with `Boolean(value)`, so truthy values such as `1` or `'yes'` will check the box.
-- Both `checkbox` and `checkboxradio` share identical properties and value semantics. The only difference is the jQuery UI widget used for styling: `.button()` for `checkbox`, `.checkboxradio()` for `checkboxradio`.
+- Both `checkbox` and `checkboxradio` share identical properties, value semantics and theming. `checkbox` is retained as a backward-compatible alias of `checkboxradio`.
+- Both types are themed with the jQuery UI **`.checkboxradio()`** widget. `ui.button()` no longer supports checkboxes or radios (jQuery UI dropped that support in 1.13), so it is not used. The widget hides the native input and styles the associated `<label>`: `ui-state-default` normally, `ui-state-active` plus `ui-icon-check` when checked.
+- The widget is created automatically once the input and its label are in the DOM — this also works for hidden fields and fields in an inactive tab panel — and `setFieldValue()` refreshes it so the checked state stays in sync with the value.
 
 **Example:**
 
 ```javascript
-// Legacy jQuery UI button-enhanced checkbox
 active: {
     label: 'Status',
-    type: 'checkbox',
-    checkboxLabel: 'Account is active'
-}
-
-// Modern jQuery UI checkboxradio widget
-active: {
-    label: 'Status',
-    type: 'checkboxradio',
+    type: 'checkbox',          // 'checkboxradio' is equivalent
     checkboxLabel: 'Account is active'
 }
 ```
@@ -510,11 +528,37 @@ const editor = new RecEdit({
 | Property | Type | Description |
 |----------|------|-------------|
 | `source` | String/Array/Function | Data source for autocomplete |
+| `sourceParams` | Object/Function | Extra query parameters for a URL `source` (ignored for array/function sources). An object, or `function(request) → object` where `request` is the jQuery UI autocomplete request (`{ term: '<typed text>' }`). Merged as `{ ...request, ...sourceParams }`, so it can also override `term`. |
 | `minLength` | Number | Minimum characters before triggering (default: 2) |
 | `delay` | Number | Delay in ms before triggering (default: 300) |
 | `maxItems` | Number | Maximum number of suggestions shown in the list. Items beyond this limit are clipped from the response. A scrollbar appears automatically when the list exceeds the available height. |
 | `scrollHeight` | String | CSS `max-height` of the suggestion dropdown when `maxItems` is set (default: `'200px'`). Accepts any valid CSS length value, e.g. `'220px'`, `'10em'`. |
 | `onSelect` | Function | Callback fired when the user picks a suggestion from the dropdown. Receives `(event, ui)` where `ui.item` is the selected item object (with `label` and `value` properties, or the object returned by `source`). Return `false` from the handler to prevent the widget from writing the selected value into the input. |
+
+**`sourceParams` example — send extra query parameters with a URL source:**
+
+When `source` is a URL string, `sourceParams` appends extra parameters to every request. Pass an object for fixed values, or a function to read the current form state (useful for dependent autocompletes).
+
+```javascript
+fields: {
+    rolepkid: { label: 'Role', type: 'select', options: '/api/roles' },
+    permpkid: {
+        label: 'Permission',
+        type: 'autocomplete',
+        source: '/api/permissions/search',   // server also receives ?term=<typed>
+        sourceParams: () => ({
+            parentpk:    'rolepkid',
+            parentpkval: editor.getFieldValue('rolepkid'),
+            childtable:  'roleperm',
+            column:      'permpkid',
+            value:       editor.getFieldValue('permpkid')
+        }),
+        minLength: 1
+    }
+}
+```
+
+The request is sent with `data: { term: '<typed text>', parentpk: 'rolepkid', parentpkval: '<selected role>', … }`. Array and function sources ignore `sourceParams`.
 
 **`onSelect` example — populate a hidden ID field when the user picks a customer name:**
 
@@ -633,9 +677,9 @@ quantity: {
 | `text` | Single-line text input (default) |
 | `textarea` | Multi-line text input |
 | `password` | Password input (masked) |
-| `checkbox` | Checkbox input (jQuery UI `.button()` enhanced) |
-| `checkboxradio` | Checkbox input (jQuery UI `.checkboxradio()` enhanced — use with jQuery UI 1.12+) |
-| `radiogroup` | Group of mutually-exclusive radio buttons (jQuery UI `.checkboxradio()` enhanced — use with jQuery UI 1.12+) |
+| `checkbox` | Checkbox input, themed with jQuery UI `.checkboxradio()` |
+| `checkboxradio` | Checkbox input, themed with jQuery UI `.checkboxradio()` (backward-compatible alias of `checkbox`) |
+| `radiogroup` | Group of mutually-exclusive radio buttons, each themed with jQuery UI `.checkboxradio()` |
 | `dropdown` / `select` | Dropdown select list |
 | `date` | Date picker (jQuery UI datepicker) |
 | `time` | Time picker (requires [jquery-timepicker](https://timepicker.co)) |
@@ -702,7 +746,7 @@ The `file` type renders a native `<input type="file">` (one file per field, no t
 | `thumbnailSize` | Number / String | `64` | Thumbnail max width and height: a number (px) or a CSS length string such as `'5em'`. |
 | `dropZone` | Boolean | `true` | Make the whole field a drag-and-drop target, with a hint. Not applied to `readonly` / `readOnly` / `disabled` fields. |
 
-`readonly`, `readOnly`, `disabled`, `hidden`, `transient` and `required` work as for other fields. `required` is a marker only (asterisk and `aria-required`): check `edpak.formdata[field] === ''` in `validateForm`.
+`readonly`, `readOnly`, `disabled`, `hidden`, `transient` and `required` work as for other fields. `required` is a marker only (the red asterisk, plus `aria-required` on the wrapper and on the native file input): check `edpak.formdata[field] === ''` in `validateForm`.
 
 **Layout:** `div.file-field` containing the thumbnail (left, hidden until there is a URL) and a body with the current filename plus a Remove button, the native input and the drop hint. If the thumbnail fails to load (for example the server returns 404 for a non-image), it is hidden and only the filename is shown.
 
@@ -2614,7 +2658,10 @@ You can customize the appearance by targeting these classes:
 - `.field-label` - Field label
 - `.field-input-container` - Input wrapper
 - `.form-control` - Input/textarea/select elements
-- `.readonly-field` - Read-only field
+- `.checkbox-container` - Wrapper of a `checkbox` / `checkboxradio` field (contains `.form-checkbox` and its label)
+- `.radiogroup-container` - Wrapper of a `radiogroup` field (contains `.form-radio` inputs and their labels); gets `role="group"` and `aria-labelledby`
+- `.slider-container` - Wrapper of a `slider` field (contains `.slider-widget` and `.slider-value`)
+- `.readonly-field` - Read-only field. Applied to the control for text-like types and selects; to the wrapper (`.checkbox-container`, `.radiogroup-container`, `.slider-container`, `.file-field`) and to `.slider-value` for compound types. `recedit.css` dims the compound wrappers and shows a `not-allowed` cursor even when `useJQueryUITheme` is `false`
 - `.char-counter` - Character counter
 - `.char-counter-warning` - Character counter warning (near limit)
 - `.field-error` - Inline field validation error message (hidden by default, shown by `displayFieldErrors()`)
@@ -2664,7 +2711,8 @@ You can customize the appearance by targeting these classes:
   - jQuery UI Spinner
   - jQuery UI Slider
   - jQuery UI Selectmenu
-  - jQuery UI Button
+  - jQuery UI Checkboxradio (checkbox, checkboxradio and radiogroup theming)
+  - jQuery UI Button (dialog buttons and the file Remove button)
 - Optional: [jQuery Inputmask](https://github.com/RobinHerbots/Inputmask) plugin for input masks
 - Optional: [jQuery Timepicker](https://timepicker.co/) plugin for time fields
 - Optional: [jQuery Growl](https://github.com/ksylvest/jquery-growl) plugin (or similar) for custom notifications
