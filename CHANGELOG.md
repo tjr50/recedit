@@ -59,5 +59,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fixed `readonly` / `readOnly` / `disabled` not being honoured by every field type (checkbox, radiogroup, select, date, time, spinner, slider); read-only values are still submitted.
 - Updated documentation (read-only behaviour, `sourceParams`, checkbox theming, label/id binding, CSS classes) and added QUnit/E2E coverage for the changes above; rebuilt `dist/recedit.min.js`.
 
+## [0.1.4-preview] - 2026-11-18
+### Changes
+- amended _createAutocomplete so that errors returned from the server are properly displayed in the field's error label under the input using a new _setAutocompleteError() method.
+
 
 

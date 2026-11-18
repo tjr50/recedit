@@ -36,7 +36,7 @@
  * @license MIT
  * @author Ozmx Internet Services <recedit@ozmx.com.au>
  */
-console.log('RecEdit.js loaded - Version 0.1.3-preview');
+console.log('RecEdit.js loaded - Version 0.1.4-preview');
 
 // Compatibility shim: $.isFunction was removed in jQuery 4.0.
 // Restored here for legacy plugins (e.g. jquery-timepicker) that still call it.
@@ -2053,9 +2053,28 @@ class RecEdit {
             if (typeof fieldConfig.source === 'string') {
                 const url = fieldConfig.source;
                 const params = fieldConfig.sourceParams;
+                let lastXhr = null;
                 autocompleteOptions.source = (request, response) => {
                     const extra = typeof params === 'function' ? params(request) : (params || {});
-                    $.getJSON(url, { ...request, ...extra }, response);
+                    if (lastXhr) lastXhr.abort();
+                    const xhr = lastXhr = $.getJSON(url, { ...request, ...extra });
+                    xhr.done(data => {
+                        if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
+                            this._setAutocompleteError($input, String(data.error));
+                            response([]);
+                        } else {
+                            this._setAutocompleteError($input, null);
+                            response(data);
+                        }
+                    }).fail((jqXHR, textStatus, errorThrown) => {
+                        if (textStatus === 'abort') return;
+                        console.error('Autocomplete request failed', url, jqXHR.status, textStatus, errorThrown, jqXHR.responseText);
+                        const detail = textStatus === 'parsererror'
+                            ? 'invalid server response'
+                            : ('HTTP ' + jqXHR.status + (errorThrown ? ' ' + errorThrown : ''));
+                        this._setAutocompleteError($input, 'Lookup failed (' + detail + ')');
+                        response([]);
+                    });
                 };
             } else if (Array.isArray(fieldConfig.source)) {
                 autocompleteOptions.source = fieldConfig.source;
@@ -2097,6 +2116,22 @@ class RecEdit {
 
         }, 0);
         return $input;
+    }
+
+    /**
+     * Shows (or clears, when msg is falsy) an autocomplete lookup error in the field's
+     * error label under the input.
+     * @private
+     */
+    _setAutocompleteError($input, msg) {
+        const $errorEl = $input.closest('.field-group').find('.field-error');
+        if (msg) {
+            $errorEl.text(msg).show();
+            $input.addClass('field-invalid');
+        } else {
+            $errorEl.hide().text('');
+            $input.removeClass('field-invalid');
+        }
     }
 
     /**
